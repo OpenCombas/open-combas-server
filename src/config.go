@@ -1,10 +1,11 @@
 package main
 
 type ServerConfig struct {
-	WorldPort        int32  `json:"WorldPort" env:"WorldPort"`
-	WorldOldPort     int32  `json:"WorldOtherPort" env:"WorldOtherPort"`
-	ServerStatusPort int32  `json:"ServerStatusPort" env:"ServerStatusPort"`
+	WorldPort        int    `json:"WorldPort" env:"WorldPort"`
+	WorldOldPort     int    `json:"WorldOtherPort" env:"WorldOtherPort"`
+	ServerStatusPort int    `json:"ServerStatusPort" env:"ServerStatusPort"`
 	ListeningAddress string `json:"ListeningAddress" env:"ListeningAddress"`
+	BufferSize       int    `json:"BufferSize" env:"BufferSize"`
 }
 
 func LoadConfig() ServerConfig {
@@ -13,6 +14,7 @@ func LoadConfig() ServerConfig {
 		WorldOldPort:     1255,
 		ServerStatusPort: 1207,
 		ListeningAddress: "0.0.0.0",
+		BufferSize:       4000,
 	}
 	//todo: parse config file, for now it is hardcoded
 
