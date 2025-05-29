@@ -2,8 +2,7 @@ package main
 
 import (
 	"ChromehoundsStatusServer/status"
-	"bytes"
-	"encoding/gob"
+	"encoding/binary"
 	"log"
 	"net"
 	"os"
@@ -90,14 +89,12 @@ func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 		offset := time.Minute * 10
 		responseStruct := status.CreateStatus(currentTime, currentTime.Add(-offset), currentTime.Add(offset))
 
-		var sendBuffer bytes.Buffer
-		enc := gob.NewEncoder(&sendBuffer)
-
-		if err := enc.Encode(responseStruct); err != nil {
+		sendBuffer := make([]byte, 64)
+		if _, err := binary.Encode(buffer, binary.LittleEndian, responseStruct); err != nil {
 			panic(err)
 		}
 
-		bytesSent, err := conn.WriteToUDP(sendBuffer.Bytes(), clientAddr)
+		bytesSent, err := conn.WriteToUDP(sendBuffer, clientAddr)
 		if err != nil {
 			Warn.Printf("[OTHER] sendto failed: %v\n", err)
 			continue
