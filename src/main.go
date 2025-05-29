@@ -4,14 +4,23 @@ import (
 	"ChromehoundsStatusServer/status"
 	"bytes"
 	"encoding/gob"
-	"fmt"
+	"log"
 	"net"
 	"os"
 	"time"
 )
 
+// Define loggers for each level
+var (
+	Info  = log.New(os.Stdout, "INFO: ", log.LstdFlags|log.Lshortfile)
+	Warn  = log.New(os.Stdout, "WARN: ", log.LstdFlags|log.Lshortfile)
+	Error = log.New(os.Stderr, "ERROR: ", log.LstdFlags|log.Lshortfile)
+)
+
 func main() {
+	log.Println("App started")
 	var cfg = LoadConfig()
+	log.Println("Config Loaded")
 	var address = net.ParseIP(cfg.ListeningAddress)
 
 	go RunEchoingServer(address, cfg.WorldPort, "WORLD", cfg.BufferSize)
@@ -30,24 +39,24 @@ func RunEchoingServer(listenAddress net.IP, listenPort int, label string, buffer
 
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[%s] Failed to bind: %v\n", label, err)
+		Error.Printf("[%s] Failed to bind: %v\n", label, err)
 		return
 	}
 	defer conn.Close()
 
-	fmt.Printf("[%s] UDP Echo Server is listening on port %d\n", label, listenPort)
+	Info.Printf("[%s] UDP Echo Server is listening on port %d\n", label, listenPort)
 	buffer := make([]byte, bufferSize)
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Read error: %v\n", label, err)
+			Warn.Printf("[%s] Read error: %v\n", label, err)
 			continue
 		}
-		fmt.Printf("[%s] Received: %s\n", label, string(buffer[:n]))
+		Info.Printf("[%s] Received: %s\n", label, string(buffer[:n]))
 
 		_, err = conn.WriteToUDP(buffer[:n], clientAddr)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[%s] Write error: %v\n", label, err)
+			Warn.Printf("[%s] Write error: %v\n", label, err)
 		}
 	}
 }
@@ -60,21 +69,21 @@ func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 
 	conn, err := net.ListenUDP("udp", &addr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[OTHER] Failed to bind: %v\n", err)
+		Error.Printf("[OTHER] Failed to bind: %v\n", err)
 		return
 	}
 	defer conn.Close()
 
-	fmt.Printf("[OTHER] UDP Echo Server is listening on port %d\n", listenPort)
+	Info.Printf("[OTHER] UDP Echo Server is listening on port %d\n", listenPort)
 
 	buffer := make([]byte, bufferSize)
 	for {
 		n, clientAddr, err := conn.ReadFromUDP(buffer)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[OTHER] Read error: %v\n", err)
+			Warn.Printf("[OTHER] Read error: %v\n", err)
 			continue
 		}
-		fmt.Printf("[OTHER] Received from %s:%d -> %s\n",
+		Info.Printf("[OTHER] Received from %s:%d -> %s\n",
 			clientAddr.IP, clientAddr.Port, string(buffer[:n]))
 
 		currentTime := time.Now()
@@ -90,11 +99,11 @@ func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 
 		bytesSent, err := conn.WriteToUDP(sendBuffer.Bytes(), clientAddr)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "[OTHER] sendto failed: %v\n", err)
+			Warn.Printf("[OTHER] sendto failed: %v\n", err)
 			continue
 		}
 
-		fmt.Printf("[OTHER] Echoed %d bytes to %s:%d\n",
+		Info.Printf("[OTHER] Echoed %d bytes to %s:%d\n",
 			bytesSent, clientAddr.IP, clientAddr.Port)
 	}
 }
