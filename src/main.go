@@ -75,23 +75,23 @@ func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 
 	Info.Printf("[OTHER] UDP Echo Server is listening on port %d\n", listenPort)
 
-	buffer := make([]byte, bufferSize)
+	readBuffer := make([]byte, bufferSize)
 	for {
-		n, clientAddr, err := conn.ReadFromUDP(buffer)
+		n, clientAddr, err := conn.ReadFromUDP(readBuffer)
 		if err != nil {
 			Warn.Printf("[OTHER] Read error: %v\n", err)
 			continue
 		}
 		Info.Printf("[OTHER] Received from %s:%d -> %s\n",
-			clientAddr.IP, clientAddr.Port, string(buffer[:n]))
+			clientAddr.IP, clientAddr.Port, string(readBuffer[:n]))
 
 		currentTime := time.Now()
 		offset := time.Minute * 10
 		responseStruct := status.CreateStatus(currentTime, currentTime.Add(-offset), currentTime.Add(offset))
 
 		sendBuffer := make([]byte, 64)
-		if _, err := binary.Encode(buffer, binary.LittleEndian, responseStruct); err != nil {
-			panic(err)
+		if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
+			continue
 		}
 
 		bytesSent, err := conn.WriteToUDP(sendBuffer, clientAddr)
