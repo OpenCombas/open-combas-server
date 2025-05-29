@@ -30,14 +30,14 @@ type StatusHeader struct {
 	Unknown      [12]byte
 }
 
-var gameSeasonValue int32 = 3
-var ProgramVersionValue int32 = 4096
+var gameSeasonValue = [4]byte{0x00, 0x03, 0x00, 0x00}
+var ProgramVersionValue = [4]byte{0x00, 0x00, 0x00, 0x10}
 
 type ServerState struct {
 	Header                     StatusHeader
+	GameSeason                 [4]byte
+	ProgramVersion             [4]byte
 	Unknown                    byte
-	GameSeason                 int32
-	ProgramVersion             int32
 	ServerLocalTime            ServerTime
 	ServerMaintenanceStartTime ServerTime
 	ServerMaintenanceEndTime   ServerTime
