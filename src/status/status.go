@@ -5,13 +5,12 @@ import (
 )
 
 type ServerTime struct {
-	year    uint16
-	month   uint8
-	day     uint8
-	hour    uint8
-	minute  uint8
-	second  uint8
-	unknown byte
+	year   uint16
+	month  uint8
+	day    uint8
+	hour   uint8
+	minute uint8
+	second uint8
 }
 
 var chromeHoundsHeaderValue = [2]byte{'C', 'H'}
@@ -31,7 +30,7 @@ type StatusHeader struct {
 }
 
 var gameSeasonValue int32 = 3
-var ProgramVersionValue int32 = 3
+var ProgramVersionValue int32 = 4096
 
 type ServerState struct {
 	header                         StatusHeader
@@ -44,7 +43,6 @@ type ServerState struct {
 	serverMaintenanceStartTimeFlag byte
 	serverMaintenanceEndTime       ServerTime
 	serverMaintenanceEndTimeFlag   byte
-	terminator                     byte
 }
 
 func createHeader() StatusHeader {
@@ -57,25 +55,23 @@ func createHeader() StatusHeader {
 
 func createServerTimeRaw(year uint16, month uint8, day uint8, hour uint8, minute uint8, second uint8) ServerTime {
 	return ServerTime{
-		year:    year,
-		month:   month,
-		day:     day,
-		hour:    hour,
-		minute:  minute,
-		second:  second,
-		unknown: 0x00,
+		year:   year,
+		month:  month,
+		day:    day,
+		hour:   hour,
+		minute: minute,
+		second: second,
 	}
 }
 
 func createServerTime(time time.Time) ServerTime {
 	return ServerTime{
-		year:    uint16(time.Year()),
-		month:   uint8(time.Month()),
-		day:     uint8(time.Day()),
-		hour:    uint8(time.Hour()),
-		minute:  uint8(time.Minute()),
-		second:  uint8(time.Second()),
-		unknown: 0x00,
+		year:   uint16(time.Year()),
+		month:  uint8(time.Month()),
+		day:    uint8(time.Day()),
+		hour:   uint8(time.Hour()),
+		minute: uint8(time.Minute()),
+		second: uint8(time.Second()),
 	}
 }
 
@@ -91,6 +87,5 @@ func CreateStatus(serverTime time.Time, maintenanceStart time.Time, maintenanceE
 		serverMaintenanceStartTimeFlag: 0x04,
 		serverMaintenanceEndTime:       createServerTime(maintenanceEnd),
 		serverMaintenanceEndTimeFlag:   0x00,
-		terminator:                     0x00,
 	}
 }
