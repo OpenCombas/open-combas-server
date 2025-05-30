@@ -4,7 +4,8 @@ import (
 	"ChromehoundsStatusServer/status"
 	"bytes"
 	"encoding/binary"
-	"encoding/gob"
+	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -12,20 +13,8 @@ func TestDateStruct(t *testing.T) {
 	byteTarget := []byte{0xE9, 0x07, 0x05, 0xf, 0x02, 0x0a, 0x00, 0x04}
 	strct := status.CreateServerTimeRaw(2025, 05, 0xf, 0x02, 0x0a, 0x00, 0x04)
 
-	var sendBuffer bytes.Buffer
-	enc := gob.NewEncoder(&sendBuffer)
-	if err := enc.Encode(strct); err != nil {
-		panic(err)
-	}
-
-	buffer := make([]byte, 8)
-	if _, err := binary.Encode(buffer, binary.LittleEndian, strct); err != nil {
-		panic(err)
-	}
-
-	if !bytes.Equal(byteTarget, buffer) {
-		panic("Mismatch")
-	}
+	buffer := encodeToBuffer(strct, len(byteTarget), t)
+	compareBinaryBuffers(byteTarget, buffer, t)
 }
 
 func TestHeaderStruct(t *testing.T) {
@@ -37,14 +26,8 @@ func TestHeaderStruct(t *testing.T) {
 		0x00, 0x00, 0x00, 0x00}
 	strct := status.CreateHeader(status.XuidValueHardCoded)
 
-	buffer := make([]byte, 31)
-	if _, err := binary.Encode(buffer, binary.LittleEndian, strct); err != nil {
-		panic(err)
-	}
-
-	if !bytes.Equal(byteTarget, buffer) {
-		panic("Mismatch")
-	}
+	buffer := encodeToBuffer(strct, len(byteTarget), t)
+	compareBinaryBuffers(byteTarget, buffer, t)
 }
 
 func TestStatusStruct(t *testing.T) {
@@ -67,11 +50,46 @@ func TestStatusStruct(t *testing.T) {
 
 	strct := status.CreateStatusRaw(status.XuidValueHardCoded, time, maintStart, maintEnd)
 
-	buffer := make([]byte, 64)
+	buffer := encodeToBuffer(strct, len(byteTarget), t)
+	compareBinaryBuffers(byteTarget, buffer, t)
+}
+
+// use this with structs only of fixed size
+func encodeToBuffer[T any](strct T, size int, t *testing.T) []byte {
+	buffer := make([]byte, size)
 	if _, err := binary.Encode(buffer, binary.LittleEndian, strct); err != nil {
-		panic(err)
+		t.Errorf("Encoding error: %s", err)
 	}
-	if !bytes.Equal(byteTarget, buffer) {
-		panic("Mismatch")
+	return buffer
+}
+
+func compareBinaryBuffers(expected []byte, result []byte, t *testing.T) {
+
+	if len(expected) != len(result) {
+		t.Errorf("Size mismatch, \nexpected: %d\nresult:%d", len(expected), len(result))
 	}
+
+	if !bytes.Equal(expected, result) {
+		errorMarker := make([]string, len(expected))
+		for i := range len(expected) {
+			if expected[i] != result[i] {
+				errorMarker[i] = "  ^^"
+			} else {
+				errorMarker[i] = "    "
+			}
+		}
+
+		t.Errorf("Binary mismatch, \nexpected: %s\nresult:   %s\n          %s",
+			encodeHex(expected),
+			encodeHex(result),
+			strings.Join(errorMarker, ""))
+	}
+}
+
+func encodeHex(buf []byte) string {
+	parts := make([]string, len(buf))
+	for i, b := range buf {
+		parts[i] = fmt.Sprintf("\\x%02x", b) // lowercase hex, use %02X for uppercase
+	}
+	return strings.Join(parts, "")
 }
