@@ -4,20 +4,11 @@ import (
 	"ChromehoundsStatusServer/status"
 	"context"
 	"encoding/binary"
-	"log"
 	"net"
-	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
-)
-
-// Define loggers for each level
-var (
-	Info  = log.New(os.Stdout, "INFO: ", log.LstdFlags)
-	Warn  = log.New(os.Stdout, "WARN: ", log.LstdFlags)
-	Error = log.New(os.Stderr, "ERROR: ", log.LstdFlags)
 )
 
 var wg sync.WaitGroup
