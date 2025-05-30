@@ -7,6 +7,8 @@ type ServerConfig struct {
 	ServerStatusPort int    `json:"ServerStatusPort" env:"ServerStatusPort"`
 	ListeningAddress string `json:"ListeningAddress" env:"ListeningAddress"`
 	BufferSize       int    `json:"BufferSize" env:"BufferSize"`
+	ShopBufferSize   int    `json:"ShopBufferSize" env:"ShopBufferSize"`
+	WorldBufferSize  int    `json:"WorldBufferSize" env:"WorldBufferSize"`
 }
 
 func LoadConfig() ServerConfig {
@@ -17,6 +19,8 @@ func LoadConfig() ServerConfig {
 		ServerStatusPort: 1207,
 		ListeningAddress: "0.0.0.0",
 		BufferSize:       4000,
+		ShopBufferSize:   5000,
+		WorldBufferSize:  5000,
 	}
 	//todo: parse config file, for now it is hardcoded
 

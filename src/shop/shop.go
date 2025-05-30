@@ -1,5 +1,10 @@
 package shop
 
+import (
+	"crypto/rand"
+	"log"
+)
+
 var chromeHoundsHeaderValue = [2]byte{'C', 'H'}
 var xuidValue = [17]byte{
 	'0', '0', '0', '0', '9', '0', '0', '0',
@@ -10,23 +15,19 @@ var unknownHeaderValue = [12]byte{
 	0x00,
 }
 
-// var serverData = [3000]byte{
-// 	0x00 * 3000,
-// }
-
 type ShopHeader struct {
 	ChromeHounds [2]byte
 	Xuid         [17]byte
 	Unknown      [12]byte
 }
 
-// type ShopData struct {
-// 	Data [3000]byte
-// }
+type ShopData struct {
+	Data [5000]byte
+}
 
 type ServerState struct {
 	Header ShopHeader
-	// Data   ShopData
+	Data   ShopData
 }
 
 func createHeader() ShopHeader {
@@ -37,22 +38,29 @@ func createHeader() ShopHeader {
 	}
 }
 
-// func createShopData() ShopData {
-// 	return ShopData{
-// 		Data: serverData,
-// 	}
-// }
+func createShopData() ShopData {
+	var shopData = [5000]byte{}
+	randomData := make([]byte, 5000)
+	_, err := rand.Read(randomData)
+	if err != nil {
+		log.Fatalf("error while generating random string: %s", err)
+	}
+	copy(shopData[:], randomData)
+	return ShopData{
+		Data: shopData,
+	}
+}
 
 func CreateShop() ServerState {
 	return ServerState{
 		Header: createHeader(),
-		// Data:   createShopData(),
+		Data:   createShopData(),
 	}
 }
 
 func CreateShopRaw() ServerState {
 	return ServerState{
 		Header: createHeader(),
-		// Data:   createShopData(),
+		Data:   createShopData(),
 	}
 }

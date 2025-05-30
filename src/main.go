@@ -25,7 +25,7 @@ func main() {
 
 	go RunEchoingServer(address, cfg.WorldPort, "WORLD", cfg.BufferSize)
 	go RunEchoingServer(address, cfg.WorldOldPort, "WORLD_OLD", cfg.BufferSize)
-	go RunShopServer(address, cfg.ShopPort, cfg.BufferSize)
+	go RunShopServer(address, cfg.ShopPort, cfg.ShopBufferSize)
 	go RunStatusServer(address, cfg.ServerStatusPort, cfg.BufferSize)
 
 	// Sleep forever (or until manually stopped)
@@ -89,7 +89,7 @@ func RunShopServer(listenAddress net.IP, listenPort int, bufferSize int) {
 
 		responseStruct := shop.CreateShop()
 
-		sendBuffer := make([]byte, 31)
+		sendBuffer := make([]byte, 5031)
 		if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
 			panic(err)
 		}
@@ -131,7 +131,7 @@ func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 			clientAddr.IP, clientAddr.Port, string(readBuffer[:n]))
 
 		currentTime := time.Now()
-		offset := time.Minute * 24
+		offset := time.Hour * 24
 		var helloBuffer []byte = readBuffer[0:31]
 		var helloStruct status.UserHelloMessage
 
