@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ChromehoundsStatusServer/shop"
 	"ChromehoundsStatusServer/status"
 	"encoding/binary"
 	"log"
@@ -24,6 +25,7 @@ func main() {
 
 	go RunEchoingServer(address, cfg.WorldPort, "WORLD", cfg.BufferSize)
 	go RunEchoingServer(address, cfg.WorldOldPort, "WORLD_OLD", cfg.BufferSize)
+	go RunShopServer(address, cfg.ShopPort, cfg.BufferSize)
 	go RunStatusServer(address, cfg.ServerStatusPort, cfg.BufferSize)
 
 	// Sleep forever (or until manually stopped)
@@ -60,6 +62,49 @@ func RunEchoingServer(listenAddress net.IP, listenPort int, label string, buffer
 	}
 }
 
+func RunShopServer(listenAddress net.IP, listenPort int, bufferSize int) {
+	addr := net.UDPAddr{
+		Port: listenPort,
+		IP:   listenAddress,
+	}
+
+	conn, err := net.ListenUDP("udp", &addr)
+	if err != nil {
+		Error.Printf("[SHOP] Failed to bind: %v\n", err)
+		return
+	}
+	defer conn.Close()
+
+	Info.Printf("[SHOP] UDP Echo Server is listening on port %d\n", listenPort)
+
+	buffer := make([]byte, bufferSize)
+	for {
+		n, clientAddr, err := conn.ReadFromUDP(buffer)
+		if err != nil {
+			Warn.Printf("[SHOP] Read error: %v\n", err)
+			continue
+		}
+		Info.Printf("[SHOP] Received from %s:%d -> %s\n",
+			clientAddr.IP, clientAddr.Port, string(buffer[:n]))
+
+		responseStruct := shop.CreateShop()
+
+		sendBuffer := make([]byte, 31)
+		if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
+			panic(err)
+		}
+
+		bytesSent, err := conn.WriteToUDP(sendBuffer, clientAddr)
+		if err != nil {
+			Warn.Printf("[SHOP] sendto failed: %v\n", err)
+			continue
+		}
+
+		Info.Printf("[SHOP] Echoed %d bytes to %s:%d\n",
+			bytesSent, clientAddr.IP, clientAddr.Port)
+	}
+}
+
 func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 	addr := net.UDPAddr{
 		Port: listenPort,
@@ -86,11 +131,11 @@ func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 			clientAddr.IP, clientAddr.Port, string(buffer[:n]))
 
 		currentTime := time.Now()
-		offset := time.Minute * 10
+		offset := time.Hour * 24
 		responseStruct := status.CreateStatus(currentTime, currentTime.Add(-offset), currentTime.Add(offset))
 
 		sendBuffer := make([]byte, 64)
-		if _, err := binary.Encode(buffer, binary.LittleEndian, responseStruct); err != nil {
+		if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
 			panic(err)
 		}
 
