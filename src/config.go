@@ -34,7 +34,7 @@ func LoadConfig() ServerConfig {
 				encoder.Encode(conf)
 			}
 		} else {
-			Error.Printf("[CONFIG] error opening config file: %w", err)
+			Error.Printf("[CONFIG] error opening config file: %s", err)
 		}
 		Warn.Printf("[CONFIG] fallback to default")
 	} else {
