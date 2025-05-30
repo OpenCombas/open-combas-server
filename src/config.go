@@ -7,10 +7,10 @@ import (
 )
 
 type ServerConfig struct {
-	ServerStatusPort int                `json:"ServerStatusPort" env:"ServerStatusPort"`
-	ListeningAddress string             `json:"ListeningAddress" env:"ListeningAddress"`
-	BufferSize       int                `json:"BufferSize" env:"BufferSize"`
-	EchoingServers   []EchoServerConfig `json:"EchoingServers" env:"EchoingServers"`
+	ServerStatusPort int
+	ListeningAddress string
+	BufferSize       int
+	EchoingServers   []EchoServerConfig
 }
 type EchoServerConfig struct {
 	Label string
@@ -39,9 +39,7 @@ func LoadConfig() ServerConfig {
 		Warn.Printf("[CONFIG] fallback to default")
 	} else {
 		defer f.Close()
-		var conf ServerConfig
-		decoder := toml.NewDecoder(f)
-		if _, err := decoder.Decode(&conf); err != nil {
+		if _, err := toml.DecodeFile("config.toml", &conf); err != nil {
 			Warn.Printf("[CONFIG] failed decoding config - fallback to default")
 			conf = generateDefaultConfig()
 		}
