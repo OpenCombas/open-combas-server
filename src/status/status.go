@@ -4,6 +4,12 @@ import (
 	"time"
 )
 
+type UserHelloMessage struct {
+	ChromeHounds [4]byte //'C', 'H', 0x00, 0x00
+	Xuid         [15]byte
+	Unknown      [12]byte
+}
+
 type ServerTime struct {
 	Year   uint16
 	Month  uint8
@@ -14,44 +20,44 @@ type ServerTime struct {
 	Flag   byte
 }
 
-var chromeHoundsHeaderValue = [2]byte{'C', 'H'}
-var xuidValue = [17]byte{
-	'0', '0', '0', '0', '9', '0', '0', '0',
-	'0', '4', 'E', 'A', '2', '5', '0', '6', '3'}
-var unknownHeaderValue = [12]byte{
-	'0',
-	'0', '0', '0', '0', '0', '0', '1', 0x00, 0x00, 0x00,
-	0x00,
-}
-
 type StatusHeader struct {
-	ChromeHounds [2]byte
-	Xuid         [17]byte
+	ChromeHounds [4]byte
+	Xuid         [15]byte
 	Unknown      [12]byte
 }
 
-var gameSeasonValue = [4]byte{0x00, 0x03, 0x00, 0x00}
-var ProgramVersionValue = [4]byte{0x00, 0x00, 0x00, 0x10}
-
 type ServerState struct {
 	Header                     StatusHeader
+	Unknown                    byte
 	GameSeason                 [4]byte
 	ProgramVersion             [4]byte
-	Unknown                    byte
 	ServerLocalTime            ServerTime
 	ServerMaintenanceStartTime ServerTime
 	ServerMaintenanceEndTime   ServerTime
 }
 
-func createHeader() StatusHeader {
+var chromeHoundsHeaderValue = [4]byte{'C', 'H', '0', '0'}
+var XuidValueHardCoded = [15]byte{
+	'0', '0', '9', '0', '0', '0', '0',
+	'4', 'E', 'A', '2', '5', '0', '6',
+	'3'}
+var unknownHeaderValue = [12]byte{
+	'0',
+	'0', '0', '0', '0', '0', '0', '1', 0x00, 0x00, 0x00,
+	0x00,
+}
+var gameSeasonValue = [4]byte{0x03, 0x00, 0x00, 0x00}
+var programVersionValue = [4]byte{0x00, 0x00, 0x10, 0x00}
+
+func CreateHeader(xuid [15]byte) StatusHeader {
 	return StatusHeader{
 		ChromeHounds: chromeHoundsHeaderValue,
-		Xuid:         xuidValue,
+		Xuid:         xuid,
 		Unknown:      unknownHeaderValue,
 	}
 }
 
-func createServerTimeRaw(year uint16, month uint8, day uint8, hour uint8, minute uint8, second uint8, flag byte) ServerTime {
+func CreateServerTimeRaw(year uint16, month uint8, day uint8, hour uint8, minute uint8, second uint8, flag byte) ServerTime {
 	return ServerTime{
 		Year:   year,
 		Month:  month,
@@ -76,24 +82,24 @@ func createServerTime(time time.Time, flag byte) ServerTime {
 	}
 }
 
-func CreateStatus(serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
+func CreateStatus(xuid [15]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
 	return ServerState{
-		Header:                     createHeader(),
+		Header:                     CreateHeader(xuid),
 		Unknown:                    0x00,
 		GameSeason:                 gameSeasonValue,
-		ProgramVersion:             ProgramVersionValue,
+		ProgramVersion:             programVersionValue,
 		ServerLocalTime:            createServerTime(serverTime, 0x04),
 		ServerMaintenanceStartTime: createServerTime(maintenanceStart, 0x04),
 		ServerMaintenanceEndTime:   createServerTime(maintenanceEnd, 0x00),
 	}
 }
 
-func CreateStatusRaw(local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
+func CreateStatusRaw(xuid [15]byte, local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
 	return ServerState{
-		Header:                     createHeader(),
+		Header:                     CreateHeader(xuid),
 		Unknown:                    0x00,
 		GameSeason:                 gameSeasonValue,
-		ProgramVersion:             ProgramVersionValue,
+		ProgramVersion:             programVersionValue,
 		ServerLocalTime:            local,
 		ServerMaintenanceStartTime: maintStart,
 		ServerMaintenanceEndTime:   maintEnd,

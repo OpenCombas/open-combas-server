@@ -120,23 +120,31 @@ func RunStatusServer(listenAddress net.IP, listenPort int, bufferSize int) {
 
 	Info.Printf("[OTHER] UDP Echo Server is listening on port %d\n", listenPort)
 
-	buffer := make([]byte, bufferSize)
+	readBuffer := make([]byte, bufferSize)
 	for {
-		n, clientAddr, err := conn.ReadFromUDP(buffer)
+		n, clientAddr, err := conn.ReadFromUDP(readBuffer)
 		if err != nil {
 			Warn.Printf("[OTHER] Read error: %v\n", err)
 			continue
 		}
 		Info.Printf("[OTHER] Received from %s:%d -> %s\n",
-			clientAddr.IP, clientAddr.Port, string(buffer[:n]))
+			clientAddr.IP, clientAddr.Port, string(readBuffer[:n]))
 
 		currentTime := time.Now()
-		offset := time.Hour * 24
-		responseStruct := status.CreateStatus(currentTime, currentTime.Add(-offset), currentTime.Add(offset))
+		offset := time.Minute * 24
+		var helloBuffer []byte = readBuffer[0:31]
+		var helloStruct status.UserHelloMessage
+
+		if _, err := binary.Decode(helloBuffer, binary.LittleEndian, &helloStruct); err != nil {
+			Warn.Printf("[OTHER] fallback to default xuid due to parsing error of hello header: %v\n", err)
+			helloStruct.Xuid = status.XuidValueHardCoded
+		}
+
+		responseStruct := status.CreateStatus(helloStruct.Xuid, currentTime, currentTime.Add(-offset), currentTime.Add(offset))
 
 		sendBuffer := make([]byte, 64)
 		if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
-			panic(err)
+			continue
 		}
 
 		bytesSent, err := conn.WriteToUDP(sendBuffer, clientAddr)
