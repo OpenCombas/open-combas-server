@@ -11,8 +11,13 @@ type ServerConfig struct {
 	ListeningAddress string
 	BufferSize       int
 	EchoingServers   []EchoServerConfig
+	WorldServers     []WorldServerConfig
 }
 type EchoServerConfig struct {
+	Label string
+	Port  int
+}
+type WorldServerConfig struct {
 	Label string
 	Port  int
 }
@@ -53,6 +58,12 @@ func generateDefaultConfig() ServerConfig {
 		ListeningAddress: "0.0.0.0",
 		BufferSize:       4000,
 		EchoingServers: []EchoServerConfig{
+			{
+				Label: "ACVD",
+				Port:  50016,
+			},
+		},
+		WorldServers: []WorldServerConfig{
 			{
 				Label: "WORLD",
 				Port:  1215,

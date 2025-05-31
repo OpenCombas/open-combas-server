@@ -2,6 +2,7 @@ package main
 
 import (
 	"ChromehoundsStatusServer/status"
+	"ChromehoundsStatusServer/world"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -28,6 +29,9 @@ func main() {
 	go RunStatusServer(address, cfg.ServerStatusPort, "STATUS", cfg.BufferSize, ctx)
 	for _, echoCfg := range cfg.EchoingServers {
 		go RunEchoingServer(address, echoCfg.Port, echoCfg.Label, cfg.BufferSize, ctx)
+	}
+	for _, echoCfg := range cfg.WorldServers {
+		go RunWorldServer(address, echoCfg.Port, echoCfg.Label, cfg.BufferSize, ctx)
 	}
 
 	// Sleep forever (or until manually stopped)
@@ -99,9 +103,43 @@ func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferS
 	}
 }
 
+func RunWorldServer(listenAddress net.IP, listenPort int, label string, bufferSize int, ctx context.Context) {
+	wg.Add(1)
+	defer wg.Done()
+
+	conn, err := buildUDPListener(listenAddress, listenPort, label)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	readBuffer := make([]byte, bufferSize)
+	for {
+		select {
+		case <-ctx.Done():
+			Info.Printf("[%s] Received shutdown signal\n", label)
+			return
+
+		default:
+			_, clientAddr, err := readUDP(conn, &readBuffer, label)
+			if err != nil {
+				continue
+			}
+
+			sendBuffer, err := createWorldResponse(&readBuffer, label)
+			if err != nil {
+				continue
+			}
+
+			sendUDP(conn, clientAddr, sendBuffer, label, true)
+		}
+	}
+}
+
 func createStatusResponse(readBuffer *[]byte, label string) (*[]byte, error) {
 	currentTime := time.Now()
-	offset := time.Minute * 10
+	maintenanceBegins := time.Hour * 72
+	maintenanceEnds := time.Hour * 96
 	var helloBuffer []byte = (*readBuffer)[0:31]
 	var helloStruct status.UserHelloMessage
 
@@ -110,8 +148,31 @@ func createStatusResponse(readBuffer *[]byte, label string) (*[]byte, error) {
 		helloStruct.Xuid = status.XuidValueHardCoded
 	}
 
-	responseStruct := status.CreateStatus(helloStruct.Xuid, currentTime, currentTime.Add(-offset), currentTime.Add(offset))
+	responseStruct := status.CreateStatus(helloStruct.Xuid, currentTime, currentTime.Add(maintenanceBegins), currentTime.Add(maintenanceEnds))
 	sendBuffer := make([]byte, 64)
+	if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
+		Warn.Printf("[%s] Error populating sendbuffer: %s", label, err)
+		return nil, err
+	}
+	return &sendBuffer, nil
+}
+
+func createWorldResponse(readBuffer *[]byte, label string) (*[]byte, error) {
+	// there must be a jollier way to do this
+	// currentTime := time.Now()
+	// currentTimeSeconds := uint32(currentTime.Unix())
+	// timeBuffer := make([]byte, 4)
+	// var currentTimeBytes [4]byte
+	// binary.LittleEndian.PutUint32(timeBuffer, currentTimeSeconds)
+	// copy(currentTimeBytes[:], timeBuffer)
+	var helloBuffer []byte = (*readBuffer)[0:47]
+	var helloStruct world.WorldUserHelloMessage
+	if _, err := binary.Decode(helloBuffer, binary.LittleEndian, &helloStruct); err != nil {
+		Warn.Printf("[%s] fallback to default xuid due to parsing error of hello header: %v\n", label, err)
+	}
+
+	responseStruct := world.CreateWorldState()
+	sendBuffer := make([]byte, 256)
 	if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
 		Warn.Printf("[%s] Error populating sendbuffer: %s", label, err)
 		return nil, err
