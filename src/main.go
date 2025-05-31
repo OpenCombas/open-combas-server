@@ -1,6 +1,9 @@
 package main
 
 import (
+	"ChromehoundsStatusServer/config"
+	"ChromehoundsStatusServer/logging"
+	"ChromehoundsStatusServer/server"
 	"ChromehoundsStatusServer/status"
 	"context"
 	"encoding/binary"
@@ -17,11 +20,6 @@ var wg sync.WaitGroup
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-
-	Info.Println("App started")
-	var cfg = LoadConfig()
-	Info.Println("Config Loaded")
-
 	// Initialize buffer pools for performance
 	InitBufferPools(cfg.BufferSize)
 
@@ -30,25 +28,33 @@ func main() {
 		StartGlobalReporting(cfg.PerfReportIntervalSec * time.Second)
 		Info.Println("Performance monitoring enabled")
 	}
-
+	logging.Info.Println("App started")
+	var cfg = config.LoadConfig()
+	logging.Info.Println("Config Loaded")
 	var address = net.ParseIP(cfg.ListeningAddress)
-
-	go RunStatusServer(address, cfg.ServerStatusPort, "STATUS", cfg.BufferSize, ctx, &cfg)
-	for _, echoCfg := range cfg.EchoingServers {
-		go RunEchoingServer(address, echoCfg.Port, echoCfg.Label, cfg.BufferSize, ctx, &cfg)
+	for _, serverConfig := range cfg.Servers {
+		if serverConfig.Enabled {
+			bufferSize := getBufferSize(serverConfig.BufferSize, cfg.DefaultBufferSize)
+			switch serverConfig.Type {
+			case config.Status:
+				go server.RunStatusServer(address, serverConfig.Port, serverConfig.Label, bufferSize, &ctx, &wg)
+			case config.Echoing:
+				go server.RunEchoingServer(address, &serverConfig, bufferSize, &ctx, &wg)
+			default:
+				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)
+			}
+		}
 	}
 
 	// Sleep forever (or until manually stopped)
 	<-ctx.Done()
-	Info.Println("Shutting down")
-
+	logging.Info.Println("Shuting down")
+	wg.Wait()
 	// Print final performance statistics before shutting down if enabled
 	if cfg.EnablePerformanceMonitoring {
 		PrintGlobalStats()
 	}
-
-	wg.Wait()
-	Info.Println("Shut down")
+	logging.Info.Println("Shut down")
 }
 
 func RunEchoingServer(listenAddress net.IP, listenPort int, label string, bufferSize int, ctx context.Context, cfg *ServerConfig) {
@@ -280,6 +286,16 @@ func sendUDP(conn *net.UDPConn, clientAddr *net.UDPAddr, buffer *[]byte, label s
 		LogPacketSent(label, clientAddr, bytesSent)
 	}
 	return nil
+}
+
+func getBufferSize(serverBufferSize int, defaultBufferSize int) int {
+	var bufferSize int
+	if serverBufferSize == 0 {
+		bufferSize = defaultBufferSize
+	} else {
+		bufferSize = serverBufferSize
+	}
+	return bufferSize
 }
 
 // isTimeoutError checks if an error is a network timeout

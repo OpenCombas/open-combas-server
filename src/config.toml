@@ -1,15 +1,23 @@
-ServerStatusPort = 1207
 ListeningAddress = "0.0.0.0"
-BufferSize = 4000
+DefaultBufferSize = 4000
 
-PerfReportIntervalSec = 30
-EnablePerformanceMonitoring = false
-VerboseLogging = false
-
-[[EchoingServers]]
+[[Servers]]
   Label = "WORLD"
-  Port = 1255
-
-[[EchoingServers]]
-  Label = "WORLD_OLD"
   Port = 1215
+  Enabled = true
+  Type = "Echoing"
+  BufferSize = 0
+
+[[Servers]]
+  Label = "WORLD_OLD"
+  Port = 1255
+  Enabled = true
+  Type = "Echoing"
+  BufferSize = 0
+
+[[Servers]]
+  Label = "STATUS"
+  Port = 1207
+  Enabled = true
+  Type = "Status"
+  BufferSize = 0
