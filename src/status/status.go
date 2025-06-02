@@ -5,7 +5,9 @@ import (
 )
 
 // quite probably matches the struct used by server
-// possibly they use CHxx format for magic value, with xx being dependant on service
+// possibly they use CHxx format for magic value, with xx being dependant on service.
+//
+// 31 bytes
 type UserHelloMessage struct {
 	ChromeHounds [4]byte //'C', 'H', 0x00, 0x00
 	Xuid         [15]byte
@@ -13,6 +15,9 @@ type UserHelloMessage struct {
 }
 
 // struct representing DateTime used by CH
+// Flag is unknown. seen values 0x00, 0x04
+//
+// 8 bytes
 type ServerTime struct {
 	Year   uint16
 	Month  uint8
@@ -25,6 +30,8 @@ type ServerTime struct {
 
 // quite probably matches the struct used by client
 // possibly they use CHxx format for magic value, with xx being dependant on service
+//
+// 31 bytes
 type StatusHeader struct {
 	ChromeHounds [4]byte
 	Xuid         [15]byte
@@ -32,9 +39,11 @@ type StatusHeader struct {
 }
 
 // Main server state strucutre used by Status server to notify client of maintenance
+//
+// 64 bytes
 type ServerState struct {
 	Header                     StatusHeader
-	Unknown                    byte
+	Unknown                    byte //possible member of header - would make it 32byte aligned
 	GameSeason                 [4]byte
 	ProgramVersion             [4]byte
 	ServerLocalTime            ServerTime
