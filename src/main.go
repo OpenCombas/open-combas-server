@@ -174,7 +174,7 @@ func createStatusResponse(readBuffer *[]byte, label string) (*[]byte, error) {
 	processingTime := time.Since(startTime)
 	LogPerformanceMetric(label, "status_response_creation", processingTime)
 
-	return &sendBuffer, nil
+	return &responseBuffer, nil
 }
 
 func buildUDPListener(listenAddress net.IP, listenPort int, label string, bufferSize int) (*net.UDPConn, error) {
