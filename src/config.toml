@@ -1,6 +1,7 @@
 ServerStatusPort = 1207
 ListeningAddress = "0.0.0.0"
 BufferSize = 4000
+PerfReportIntervalSec = 30
 
 [[EchoingServers]]
   Label = "WORLD"

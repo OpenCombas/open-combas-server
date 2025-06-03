@@ -15,14 +15,20 @@ import (
 var wg sync.WaitGroup
 
 func main() {
-
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-
 	defer stop()
 
 	Info.Println("App started")
 	var cfg = LoadConfig()
 	Info.Println("Config Loaded")
+
+	// Initialize buffer pools for performance
+	InitBufferPools(cfg.BufferSize)
+
+	// Start performance monitoring
+	StartGlobalReporting(cfg.PerfReportIntervalSec * time.Second)
+	Info.Println("Performance monitoring enabled")
+
 	var address = net.ParseIP(cfg.ListeningAddress)
 
 	go RunStatusServer(address, cfg.ServerStatusPort, "STATUS", cfg.BufferSize, ctx)
@@ -32,7 +38,11 @@ func main() {
 
 	// Sleep forever (or until manually stopped)
 	<-ctx.Done()
-	Info.Println("Shuting down")
+	Info.Println("Shutting down")
+
+	// Print final performance statistics before shutting down
+	PrintGlobalStats()
+
 	wg.Wait()
 	Info.Println("Shut down")
 }
@@ -41,27 +51,44 @@ func RunEchoingServer(listenAddress net.IP, listenPort int, label string, buffer
 	wg.Add(1)
 	defer wg.Done()
 
-	conn, err := buildUDPListener(listenAddress, listenPort, label)
+	conn, err := buildUDPListener(listenAddress, listenPort, label, bufferSize)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 
-	buffer := make([]byte, bufferSize)
+	buffer := readBufferPool.Get()
+	defer readBufferPool.Put(buffer)
+
 	for {
 		select {
 		case <-ctx.Done():
-			Info.Printf("[%s] Received shutdown signal\n", label)
+			LogShutdown(label)
 			return
 
 		default:
+			startTime := time.Now()
 			n, clientAddr, err := readUDP(conn, &buffer, label)
 			if err != nil {
+				if !isTimeoutError(err) {
+					RecordError()
+				}
 				continue
 			}
-			var sendBuffer = buffer[:n]
-			sendUDP(conn, clientAddr, &sendBuffer, label, false)
 
+			packet := buffer[:n]
+
+			// Validate echo packet
+			if err := ValidateEchoPacket(packet, clientAddr, label); err != nil {
+				RecordError()
+				continue // Skip invalid packets
+			}
+
+			processingTime := time.Since(startTime)
+			LogPacketReceived(label, clientAddr, n, processingTime)
+			RecordPacketProcessed(n, processingTime)
+
+			sendUDP(conn, clientAddr, &packet, label, false)
 		}
 	}
 }
@@ -70,27 +97,46 @@ func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferS
 	wg.Add(1)
 	defer wg.Done()
 
-	conn, err := buildUDPListener(listenAddress, listenPort, label)
+	conn, err := buildUDPListener(listenAddress, listenPort, label, bufferSize)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 
-	readBuffer := make([]byte, bufferSize)
+	readBuffer := readBufferPool.Get()
+	defer readBufferPool.Put(readBuffer)
+
 	for {
 		select {
 		case <-ctx.Done():
-			Info.Printf("[%s] Received shutdown signal\n", label)
+			LogShutdown(label)
 			return
 
 		default:
-			_, clientAddr, err := readUDP(conn, &readBuffer, label)
+			startTime := time.Now()
+			n, clientAddr, err := readUDP(conn, &readBuffer, label)
 			if err != nil {
+				if !isTimeoutError(err) {
+					RecordError()
+				}
 				continue
 			}
 
-			sendBuffer, err := createStatusResponse(&readBuffer, label)
+			packet := readBuffer[:n]
+
+			// Validate status packet
+			if err := ValidateStatusPacket(packet, clientAddr, label); err != nil {
+				RecordError()
+				continue // Skip invalid packets
+			}
+
+			processingTime := time.Since(startTime)
+			LogPacketReceived(label, clientAddr, n, processingTime)
+			RecordPacketProcessed(n, processingTime)
+
+			sendBuffer, err := createStatusResponse(&packet, label)
 			if err != nil {
+				RecordError()
 				continue
 			}
 
@@ -100,8 +146,9 @@ func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferS
 }
 
 func createStatusResponse(readBuffer *[]byte, label string) (*[]byte, error) {
-	currentTime := time.Now()
+	startTime := time.Now()
 	offset := time.Minute * 10
+
 	var helloBuffer []byte = (*readBuffer)[0:31]
 	var helloStruct status.UserHelloMessage
 
@@ -110,16 +157,27 @@ func createStatusResponse(readBuffer *[]byte, label string) (*[]byte, error) {
 		helloStruct.Xuid = status.XuidValueHardCoded
 	}
 
-	responseStruct := status.CreateStatus(helloStruct.Xuid, currentTime, currentTime.Add(-offset), currentTime.Add(offset))
-	sendBuffer := make([]byte, 64)
-	if _, err := binary.Encode(sendBuffer, binary.LittleEndian, responseStruct); err != nil {
+	responseStruct := status.CreateStatus(helloStruct.Xuid, startTime, startTime.Add(-offset), startTime.Add(offset))
+
+	// Use buffer pool for response
+	sendBuffer := statusResponsePool.Get()
+	defer statusResponsePool.Put(sendBuffer)
+
+	// Create a copy for return since we're putting the buffer back in the pool
+	responseBuffer := make([]byte, StatusResponseSize)
+
+	if _, err := binary.Encode(responseBuffer, binary.LittleEndian, responseStruct); err != nil {
 		Warn.Printf("[%s] Error populating sendbuffer: %s", label, err)
 		return nil, err
 	}
+
+	processingTime := time.Since(startTime)
+	LogPerformanceMetric(label, "status_response_creation", processingTime)
+
 	return &sendBuffer, nil
 }
 
-func buildUDPListener(listenAddress net.IP, listenPort int, label string) (*net.UDPConn, error) {
+func buildUDPListener(listenAddress net.IP, listenPort int, label string, bufferSize int) (*net.UDPConn, error) {
 	addr := net.UDPAddr{
 		Port: listenPort,
 		IP:   listenAddress,
@@ -130,12 +188,13 @@ func buildUDPListener(listenAddress net.IP, listenPort int, label string) (*net.
 		Error.Printf("[%s] Failed to bind: %v\n", label, err)
 		return nil, nil
 	}
-	Info.Printf("[%s] UDP Server is listening on port %d\n", label, listenPort)
+
+	LogServerStart(label, listenPort, bufferSize)
 	return conn, nil
 }
 
 func readUDP(conn *net.UDPConn, buffer *[]byte, label string) (int, *net.UDPAddr, error) {
-	conn.SetReadDeadline(time.Now().Add((1 * time.Second)))
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	n, clientAddr, err := conn.ReadFromUDP(*buffer)
 	if err != nil {
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
@@ -144,6 +203,7 @@ func readUDP(conn *net.UDPConn, buffer *[]byte, label string) (int, *net.UDPAddr
 		}
 		return 0, nil, err
 	} else if n == 0 {
+
 		return 0, nil, fmt.Errorf("0 bytes recieved, but still recieved")
 	}
 	Info.Printf("[%s] Received from %s:%d -> %s\n",
@@ -159,8 +219,15 @@ func sendUDP(conn *net.UDPConn, clientAddr *net.UDPAddr, buffer *[]byte, label s
 	}
 
 	if logSend {
-		Info.Printf("[%s] Sent %d bytes to %s:%d\n",
-			label, bytesSent, clientAddr.IP, clientAddr.Port)
+		LogPacketSent(label, clientAddr, bytesSent)
 	}
 	return nil
+}
+
+// isTimeoutError checks if an error is a network timeout
+func isTimeoutError(err error) bool {
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		return true
+	}
+	return false
 }

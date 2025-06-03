@@ -2,15 +2,17 @@ package main
 
 import (
 	"os"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 type ServerConfig struct {
-	ServerStatusPort int
-	ListeningAddress string
-	BufferSize       int
-	EchoingServers   []EchoServerConfig
+	ServerStatusPort      int
+	ListeningAddress      string
+	BufferSize            int
+	EchoingServers        []EchoServerConfig
+	PerfReportIntervalSec time.Duration
 }
 type EchoServerConfig struct {
 	Label string
@@ -49,9 +51,10 @@ func LoadConfig() ServerConfig {
 
 func generateDefaultConfig() ServerConfig {
 	return ServerConfig{
-		ServerStatusPort: 1207,
-		ListeningAddress: "0.0.0.0",
-		BufferSize:       4000,
+		ServerStatusPort:      1207,
+		ListeningAddress:      "0.0.0.0",
+		BufferSize:            4000,
+		PerfReportIntervalSec: time.Second * 30,
 		EchoingServers: []EchoServerConfig{
 			{
 				Label: "WORLD",
