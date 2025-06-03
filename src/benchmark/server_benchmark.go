@@ -20,6 +20,8 @@ type BenchmarkConfig struct {
 	TestDurationSeconds int
 	PacketSize          int
 	WarmupSeconds       int
+	TimeBasedTesting    bool // New: true for time-based, false for packet-count based
+	PacketRateLimit     int  // New: packets per second per client (0 = unlimited)
 }
 
 // BenchmarkResults holds the results of a benchmark run
@@ -75,9 +77,18 @@ func ChromeHoundsTestPacket(size int) []byte {
 
 // BenchmarkStatusServer tests the status server performance
 func BenchmarkStatusServer(config BenchmarkConfig) (*BenchmarkResults, error) {
-	fmt.Printf("🔬 Benchmarking Status Server (Port %d)\n", config.StatusPort)
-	fmt.Printf("   Clients: %d, Packets/Client: %d, Duration: %ds\n",
-		config.NumClients, config.PacketsPerClient, config.TestDurationSeconds)
+	testType := "Burst"
+	if config.TimeBasedTesting {
+		testType = "Sustained"
+		totalRate := config.NumClients * config.PacketRateLimit
+		fmt.Printf("🔬 Benchmarking Status Server - %s Load (Port %d)\n", testType, config.StatusPort)
+		fmt.Printf("   Clients: %d, Rate: %d pkt/sec/client (%d total/sec), Duration: %ds\n",
+			config.NumClients, config.PacketRateLimit, totalRate, config.TestDurationSeconds)
+	} else {
+		fmt.Printf("🔬 Benchmarking Status Server - %s Test (Port %d)\n", testType, config.StatusPort)
+		fmt.Printf("   Clients: %d, Packets/Client: %d\n",
+			config.NumClients, config.PacketsPerClient)
+	}
 
 	// Memory tracking
 	runtime.GC()
@@ -85,12 +96,24 @@ func BenchmarkStatusServer(config BenchmarkConfig) (*BenchmarkResults, error) {
 	runtime.ReadMemStats(&memBefore)
 
 	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(config.TestDurationSeconds+config.WarmupSeconds)*time.Second)
+		time.Duration(config.TestDurationSeconds+config.WarmupSeconds+10)*time.Second) // Extra buffer
 	defer cancel()
 
 	var results BenchmarkResults
 	var wg sync.WaitGroup
-	latencies := make(chan LatencyMeasurement, config.NumClients*config.PacketsPerClient)
+
+	// Use larger buffer for time-based testing
+	bufferSize := config.NumClients * config.PacketsPerClient
+	if config.TimeBasedTesting {
+		// Estimate packets for time-based testing
+		estimatedPackets := config.NumClients * config.PacketRateLimit * config.TestDurationSeconds
+		bufferSize = estimatedPackets
+	}
+	if bufferSize < 1000 {
+		bufferSize = 1000 // Minimum buffer size
+	}
+
+	latencies := make(chan LatencyMeasurement, bufferSize)
 
 	// Warmup period
 	if config.WarmupSeconds > 0 {
@@ -183,11 +206,31 @@ func benchmarkStatusClient(ctx context.Context, config BenchmarkConfig, clientID
 	packet := ChromeHoundsTestPacket(config.PacketSize)
 	responseBuffer := make([]byte, 1024)
 
-	for i := 0; i < config.PacketsPerClient; i++ {
+	// Calculate rate limiting delay if needed
+	var packetDelay time.Duration
+	if config.PacketRateLimit > 0 {
+		packetDelay = time.Second / time.Duration(config.PacketRateLimit)
+	}
+
+	packetCount := 0
+	startTime := time.Now()
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		// Check termination conditions
+		if config.TimeBasedTesting {
+			if time.Since(startTime) >= time.Duration(config.TestDurationSeconds)*time.Second {
+				return
+			}
+		} else {
+			if packetCount >= config.PacketsPerClient {
+				return
+			}
 		}
 
 		sendTime := time.Now()
@@ -221,31 +264,58 @@ func benchmarkStatusClient(ctx context.Context, config BenchmarkConfig, clientID
 			Latency:     receiveTime.Sub(sendTime),
 		}
 
-		// Small delay to prevent overwhelming
-		time.Sleep(time.Microsecond * 100)
+		packetCount++
+
+		// Rate limiting
+		if packetDelay > 0 {
+			time.Sleep(packetDelay)
+		} else {
+			// Small delay to prevent overwhelming
+			time.Sleep(time.Microsecond * 100)
+		}
 	}
 }
 
 // BenchmarkEchoServer tests echo server performance
 func BenchmarkEchoServer(config BenchmarkConfig) (*BenchmarkResults, error) {
-	fmt.Printf("🔬 Benchmarking Echo Server (Port %d)\n", config.EchoPort)
-
-	// Similar implementation to status server but simpler
-	// (Echo just returns what it receives)
+	testType := "Burst"
+	if config.TimeBasedTesting {
+		testType = "Sustained"
+		totalRate := config.NumClients * config.PacketRateLimit
+		fmt.Printf("🔬 Benchmarking Echo Server - %s Load (Port %d)\n", testType, config.EchoPort)
+		fmt.Printf("   Clients: %d, Rate: %d pkt/sec/client (%d total/sec), Duration: %ds\n",
+			config.NumClients, config.PacketRateLimit, totalRate, config.TestDurationSeconds)
+	} else {
+		fmt.Printf("🔬 Benchmarking Echo Server - %s Test (Port %d)\n", testType, config.EchoPort)
+		fmt.Printf("   Clients: %d, Packets/Client: %d\n",
+			config.NumClients, config.PacketsPerClient)
+	}
 
 	runtime.GC()
 	var memBefore runtime.MemStats
 	runtime.ReadMemStats(&memBefore)
 
 	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(config.TestDurationSeconds+config.WarmupSeconds)*time.Second)
+		time.Duration(config.TestDurationSeconds+config.WarmupSeconds+10)*time.Second)
 	defer cancel()
 
 	var results BenchmarkResults
 	var wg sync.WaitGroup
-	latencies := make(chan LatencyMeasurement, config.NumClients*config.PacketsPerClient)
+
+	// Use larger buffer for time-based testing
+	bufferSize := config.NumClients * config.PacketsPerClient
+	if config.TimeBasedTesting {
+		estimatedPackets := config.NumClients * config.PacketRateLimit * config.TestDurationSeconds
+		bufferSize = estimatedPackets
+	}
+	if bufferSize < 1000 {
+		bufferSize = 1000
+	}
+
+	latencies := make(chan LatencyMeasurement, bufferSize)
 
 	if config.WarmupSeconds > 0 {
+		fmt.Printf("🏃 Warming up for %d seconds...\n", config.WarmupSeconds)
 		time.Sleep(time.Duration(config.WarmupSeconds) * time.Second)
 	}
 
@@ -326,11 +396,31 @@ func benchmarkEchoClient(ctx context.Context, config BenchmarkConfig, clientID i
 	packet := []byte(testMessage)
 	responseBuffer := make([]byte, 1024)
 
-	for i := 0; i < config.PacketsPerClient; i++ {
+	// Calculate rate limiting delay if needed
+	var packetDelay time.Duration
+	if config.PacketRateLimit > 0 {
+		packetDelay = time.Second / time.Duration(config.PacketRateLimit)
+	}
+
+	packetCount := 0
+	startTime := time.Now()
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		// Check termination conditions
+		if config.TimeBasedTesting {
+			if time.Since(startTime) >= time.Duration(config.TestDurationSeconds)*time.Second {
+				return
+			}
+		} else {
+			if packetCount >= config.PacketsPerClient {
+				return
+			}
 		}
 
 		sendTime := time.Now()
@@ -359,14 +449,21 @@ func benchmarkEchoClient(ctx context.Context, config BenchmarkConfig, clientID i
 			Latency:     receiveTime.Sub(sendTime),
 		}
 
-		time.Sleep(time.Microsecond * 100)
+		packetCount++
+
+		// Rate limiting
+		if packetDelay > 0 {
+			time.Sleep(packetDelay)
+		} else {
+			time.Sleep(time.Microsecond * 100)
+		}
 	}
 }
 
 // PrintResults prints benchmark results in a formatted way
 func PrintResults(testName string, results *BenchmarkResults) {
 	fmt.Printf("\n📊 %s Results:\n", testName)
-	fmt.Printf("   Duration: %v\n", results.TestDuration)
+	fmt.Printf("   Duration: %v (actual test time)\n", results.TestDuration)
 	fmt.Printf("   Packets: %d sent, %d received (%.1f%% success)\n",
 		results.TotalPacketsSent, results.TotalPacketsReceived, results.SuccessRate)
 	fmt.Printf("   Throughput: %.1f packets/sec, %.1f KB/sec\n",
@@ -382,8 +479,9 @@ func main() {
 	fmt.Println("🚀 Open Combas Server Benchmark Suite")
 	fmt.Println("=====================================")
 
-	// Configuration for comprehensive testing
+	// Configuration for comprehensive testing with proper time-based testing
 	configs := []BenchmarkConfig{
+		// Quick burst test
 		{
 			ServerHost:          "127.0.0.1",
 			StatusPort:          1207,
@@ -393,31 +491,53 @@ func main() {
 			TestDurationSeconds: 10,
 			PacketSize:          31,
 			WarmupSeconds:       2,
+			TimeBasedTesting:    false, // Packet-count based for quick test
+			PacketRateLimit:     0,     // Unlimited
 		},
+		// Sustained medium load
 		{
 			ServerHost:          "127.0.0.1",
 			StatusPort:          1207,
 			EchoPort:            1215,
 			NumClients:          10,
-			PacketsPerClient:    500,
+			PacketsPerClient:    0, // Ignored for time-based testing
 			TestDurationSeconds: 15,
 			PacketSize:          31,
 			WarmupSeconds:       3,
+			TimeBasedTesting:    true, // Time-based testing
+			PacketRateLimit:     100,  // 100 packets/sec per client = 1000 total/sec
 		},
+		// Sustained heavy load
 		{
 			ServerHost:          "127.0.0.1",
 			StatusPort:          1207,
 			EchoPort:            1215,
-			NumClients:          50,
-			PacketsPerClient:    100,
+			NumClients:          25,
+			PacketsPerClient:    0, // Ignored for time-based testing
 			TestDurationSeconds: 20,
 			PacketSize:          31,
 			WarmupSeconds:       5,
+			TimeBasedTesting:    true, // Time-based testing
+			PacketRateLimit:     50,   // 50 packets/sec per client = 1250 total/sec
 		},
 	}
 
 	for i, config := range configs {
-		fmt.Printf("\n🔄 Running Test Suite %d/%d\n", i+1, len(configs))
+		testType := "Burst"
+		if config.TimeBasedTesting {
+			testType = "Sustained"
+		}
+
+		fmt.Printf("\n🔄 Running Test Suite %d/%d (%s)\n", i+1, len(configs), testType)
+
+		if config.TimeBasedTesting {
+			totalRate := config.NumClients * config.PacketRateLimit
+			fmt.Printf("   Clients: %d, Rate: %d pkt/sec/client (%d total/sec), Duration: %ds\n",
+				config.NumClients, config.PacketRateLimit, totalRate, config.TestDurationSeconds)
+		} else {
+			fmt.Printf("   Clients: %d, Packets/Client: %d, Duration: %ds\n",
+				config.NumClients, config.PacketsPerClient, config.TestDurationSeconds)
+		}
 
 		// Test Status Server
 		statusResults, err := BenchmarkStatusServer(config)

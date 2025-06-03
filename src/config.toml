@@ -4,8 +4,8 @@ BufferSize = 4000
 
 # Performance and logging options.
 PerfReportIntervalSec = 30
-EnablePerformanceMonitoring = true
-VerboseLogging = true
+EnablePerformanceMonitoring = false
+VerboseLogging = false
 
 [[EchoingServers]]
   Label = "WORLD"
