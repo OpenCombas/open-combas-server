@@ -8,11 +8,13 @@ import (
 )
 
 type ServerConfig struct {
-	ServerStatusPort      int
-	ListeningAddress      string
-	BufferSize            int
-	EchoingServers        []EchoServerConfig
-	PerfReportIntervalSec time.Duration
+	ServerStatusPort            int
+	ListeningAddress            string
+	BufferSize                  int
+	EchoingServers              []EchoServerConfig
+	PerfReportIntervalSec       time.Duration
+	EnablePerformanceMonitoring bool
+	VerboseLogging              bool
 }
 type EchoServerConfig struct {
 	Label string
@@ -51,10 +53,12 @@ func LoadConfig() ServerConfig {
 
 func generateDefaultConfig() ServerConfig {
 	return ServerConfig{
-		ServerStatusPort:      1207,
-		ListeningAddress:      "0.0.0.0",
-		BufferSize:            4000,
-		PerfReportIntervalSec: time.Second * 30,
+		ServerStatusPort:            1207,
+		ListeningAddress:            "0.0.0.0",
+		BufferSize:                  4000,
+		PerfReportIntervalSec:       time.Second * 30,
+		EnablePerformanceMonitoring: true,  // Can be disabled for max performance
+		VerboseLogging:              false, // Disable for production performance
 		EchoingServers: []EchoServerConfig{
 			{
 				Label: "WORLD",

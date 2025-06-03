@@ -21,7 +21,7 @@ func BenchmarkCreateStatusResponseWithPool(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		response, err := createStatusResponse(&testPacket, label)
+		response, err := createStatusResponse(&testPacket, label, false)
 		if err != nil {
 			b.Fatalf("createStatusResponse failed: %v", err)
 		}

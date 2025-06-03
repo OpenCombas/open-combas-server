@@ -25,29 +25,33 @@ func main() {
 	// Initialize buffer pools for performance
 	InitBufferPools(cfg.BufferSize)
 
-	// Start performance monitoring
-	StartGlobalReporting(cfg.PerfReportIntervalSec * time.Second)
-	Info.Println("Performance monitoring enabled")
+	// Start performance monitoring if enabled
+	if cfg.EnablePerformanceMonitoring {
+		StartGlobalReporting(cfg.PerfReportIntervalSec * time.Second)
+		Info.Println("Performance monitoring enabled")
+	}
 
 	var address = net.ParseIP(cfg.ListeningAddress)
 
-	go RunStatusServer(address, cfg.ServerStatusPort, "STATUS", cfg.BufferSize, ctx)
+	go RunStatusServer(address, cfg.ServerStatusPort, "STATUS", cfg.BufferSize, ctx, &cfg)
 	for _, echoCfg := range cfg.EchoingServers {
-		go RunEchoingServer(address, echoCfg.Port, echoCfg.Label, cfg.BufferSize, ctx)
+		go RunEchoingServer(address, echoCfg.Port, echoCfg.Label, cfg.BufferSize, ctx, &cfg)
 	}
 
 	// Sleep forever (or until manually stopped)
 	<-ctx.Done()
 	Info.Println("Shutting down")
 
-	// Print final performance statistics before shutting down
-	PrintGlobalStats()
+	// Print final performance statistics before shutting down if enabled
+	if cfg.EnablePerformanceMonitoring {
+		PrintGlobalStats()
+	}
 
 	wg.Wait()
 	Info.Println("Shut down")
 }
 
-func RunEchoingServer(listenAddress net.IP, listenPort int, label string, bufferSize int, ctx context.Context) {
+func RunEchoingServer(listenAddress net.IP, listenPort int, label string, bufferSize int, ctx context.Context, cfg *ServerConfig) {
 	wg.Add(1)
 	defer wg.Done()
 
@@ -60,17 +64,30 @@ func RunEchoingServer(listenAddress net.IP, listenPort int, label string, buffer
 	buffer := readBufferPool.Get()
 	defer readBufferPool.Put(buffer)
 
+	// Pre-compute config flags to avoid pointer dereferencing in hot path
+	enablePerfMonitoring := cfg.EnablePerformanceMonitoring
+	verboseLogging := cfg.VerboseLogging
+
+	// Pre-allocate to avoid repeated allocations
+	var startTime time.Time
+	var processingTime time.Duration
+
 	for {
 		select {
 		case <-ctx.Done():
-			LogShutdown(label)
+			if cfg.VerboseLogging {
+				LogShutdown(label)
+			}
 			return
 
 		default:
-			startTime := time.Now()
+			if enablePerfMonitoring {
+				startTime = time.Now()
+			}
+
 			n, clientAddr, err := readUDP(conn, &buffer, label)
 			if err != nil {
-				if !isTimeoutError(err) {
+				if !isTimeoutError(err) && enablePerfMonitoring {
 					RecordError()
 				}
 				continue
@@ -80,20 +97,31 @@ func RunEchoingServer(listenAddress net.IP, listenPort int, label string, buffer
 
 			// Validate echo packet
 			if err := ValidateEchoPacket(packet, clientAddr, label); err != nil {
-				RecordError()
+				if verboseLogging {
+					LogPacketValidationError(label, clientAddr, err.Error(), n)
+				}
+				if enablePerfMonitoring {
+					RecordError()
+				}
 				continue // Skip invalid packets
 			}
 
-			processingTime := time.Since(startTime)
-			LogPacketReceived(label, clientAddr, n, processingTime)
-			RecordPacketProcessed(n, processingTime)
+			if enablePerfMonitoring {
+				processingTime := time.Since(startTime)
+				RecordPacketProcessed(n, processingTime)
+
+			}
+			if verboseLogging {
+				LogPacketReceived(label, clientAddr, n, processingTime)
+
+			}
 
 			sendUDP(conn, clientAddr, &packet, label, false)
 		}
 	}
 }
 
-func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferSize int, ctx context.Context) {
+func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferSize int, ctx context.Context, cfg *ServerConfig) {
 	wg.Add(1)
 	defer wg.Done()
 
@@ -106,17 +134,30 @@ func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferS
 	readBuffer := readBufferPool.Get()
 	defer readBufferPool.Put(readBuffer)
 
+	// Pre-compute config flags to avoid pointer dereferencing in hot path
+	enablePerfMonitoring := cfg.EnablePerformanceMonitoring
+	verboseLogging := cfg.VerboseLogging
+
+	// Pre-allocate to avoid repeated allocations
+	var startTime time.Time
+	var processingTime time.Duration
+
 	for {
 		select {
 		case <-ctx.Done():
-			LogShutdown(label)
+			if cfg.VerboseLogging {
+				LogShutdown(label)
+			}
 			return
 
 		default:
-			startTime := time.Now()
+			if enablePerfMonitoring {
+				startTime = time.Now()
+			}
+
 			n, clientAddr, err := readUDP(conn, &readBuffer, label)
 			if err != nil {
-				if !isTimeoutError(err) {
+				if !isTimeoutError(err) && enablePerfMonitoring {
 					RecordError()
 				}
 				continue
@@ -126,17 +167,31 @@ func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferS
 
 			// Validate status packet
 			if err := ValidateStatusPacket(packet, clientAddr, label); err != nil {
-				RecordError()
+				if verboseLogging {
+					LogPacketValidationError(label, clientAddr, err.Error(), n)
+				}
+				if enablePerfMonitoring {
+					RecordError()
+				}
 				continue // Skip invalid packets
 			}
 
-			processingTime := time.Since(startTime)
-			LogPacketReceived(label, clientAddr, n, processingTime)
-			RecordPacketProcessed(n, processingTime)
+			if enablePerfMonitoring {
+				processingTime := time.Since(startTime)
+				RecordPacketProcessed(n, processingTime)
+			}
+			if verboseLogging {
+				LogPacketReceived(label, clientAddr, n, processingTime)
+			}
 
-			sendBuffer, err := createStatusResponse(&packet, label)
+			sendBuffer, err := createStatusResponse(&packet, label, enablePerfMonitoring)
 			if err != nil {
-				RecordError()
+				if verboseLogging {
+					Warn.Println(err)
+				}
+				if enablePerfMonitoring {
+					RecordError()
+				}
 				continue
 			}
 
@@ -145,8 +200,12 @@ func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferS
 	}
 }
 
-func createStatusResponse(readBuffer *[]byte, label string) (*[]byte, error) {
-	startTime := time.Now()
+func createStatusResponse(readBuffer *[]byte, label string, enablePerformanceMonitoring bool) (*[]byte, error) {
+	var startTime time.Time
+	if enablePerformanceMonitoring {
+		startTime = time.Now()
+	}
+
 	offset := time.Minute * 10
 
 	var helloBuffer []byte = (*readBuffer)[0:31]
@@ -171,8 +230,10 @@ func createStatusResponse(readBuffer *[]byte, label string) (*[]byte, error) {
 		return nil, err
 	}
 
-	processingTime := time.Since(startTime)
-	LogPerformanceMetric(label, "status_response_creation", processingTime)
+	if enablePerformanceMonitoring {
+		processingTime := time.Since(startTime)
+		LogPerformanceMetric(label, "status_response_creation", processingTime)
+	}
 
 	return &responseBuffer, nil
 }
