@@ -28,7 +28,7 @@ if [ -n "$OUTPUT_FILE" ]; then
 fi
 
 # Check if Go is available
-if ! command -v go &> /dev/null; then
+if ! which go &> /dev/null; then
     echo -e "${RED}❌ Go is not installed or not in PATH${NC}"
     exit 1
 fi
