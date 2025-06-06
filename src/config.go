@@ -12,12 +12,17 @@ type ServerConfig struct {
 	BufferSize       int
 	EchoingServers   []EchoServerConfig
 	WorldServers     []WorldServerConfig
+	TeamServers      []TeamServerConfig
 }
 type EchoServerConfig struct {
 	Label string
 	Port  int
 }
 type WorldServerConfig struct {
+	Label string
+	Port  int
+}
+type TeamServerConfig struct {
 	Label string
 	Port  int
 }
@@ -71,6 +76,12 @@ func generateDefaultConfig() ServerConfig {
 			{
 				Label: "WORLD_OLD",
 				Port:  1255,
+			},
+		},
+		TeamServers: []TeamServerConfig{
+			{
+				Label: "TEAM",
+				Port:  1204,
 			},
 		},
 	}

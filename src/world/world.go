@@ -1,7 +1,7 @@
 package world
 
 type WorldUserHelloMessage struct {
-	ChromeHounds  [2]byte //'C', 'H'
+	ChromeHounds  [2]byte
 	Delim1        [2]byte
 	Xuid          [16]byte
 	AccessCounter [8]byte
@@ -24,16 +24,10 @@ type WorldState struct {
 	WorldData [3]FactionData
 }
 
-// var ChromeHoundsHeaderValue = [2]byte{0x00, 0x00}
-// var Delim1Value = [2]byte{0x00, 0x00}
-// var Delim2Value = [4]byte{0x00, 0x00, 0x00, 0x00}
 var HeaderPadding = [20]byte{0x00 * 20}
 var ServerResetFlag = [2]byte{0x30, 0x32}
 var FooterPadding = [38]byte{0x00 * 38}
 
-var Padding = [3]byte{0x00 * 3}
-var EndDelim = [2]byte{0x00 * 2}
-var StandInTime = [4]byte{0x32, 0x00, 0x00, 0x00}
 var FactionUnkn = [59]byte{0x00 * 59}
 
 var Faction1CountryCode = 0x41
