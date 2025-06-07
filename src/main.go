@@ -201,10 +201,7 @@ func RunStatusServer(listenAddress net.IP, listenPort int, label string, bufferS
 }
 
 func createStatusResponse(readBuffer *[]byte, label string, enablePerformanceMonitoring bool) (*[]byte, error) {
-	var startTime time.Time
-	if enablePerformanceMonitoring {
-		startTime = time.Now()
-	}
+	var startTime = time.Now()
 
 	offset := time.Minute * 10
 

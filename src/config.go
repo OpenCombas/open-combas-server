@@ -62,11 +62,11 @@ func generateDefaultConfig() ServerConfig {
 		EchoingServers: []EchoServerConfig{
 			{
 				Label: "WORLD",
-				Port:  1215,
+				Port:  1255,
 			},
 			{
 				Label: "WORLD_OLD",
-				Port:  1255,
+				Port:  1215,
 			},
 		},
 	}

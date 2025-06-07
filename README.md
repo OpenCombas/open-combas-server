@@ -59,10 +59,10 @@ Run comprehensive benchmarks:
 
 ```bash
 # Windows
-run-benchmark.bat standard results.txt
+server_benchmark.bat standard results.txt
 
 # Linux/macOS
-./run-benchmark.sh standard results.txt
+./server_benchmark.sh standard results.txt
 ```
 
 ## Development
@@ -83,5 +83,5 @@ run-benchmark.bat quick
 1. Fork the repository
 2. Create a feature branch
 3. Run tests: `go test ./...`
-4. Run benchmarks: `./run-benchmark.sh standard`
+4. Run benchmarks: `./server_benchmark.sh standard`
 5. Submit a pull request
