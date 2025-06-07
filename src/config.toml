@@ -2,10 +2,14 @@ ServerStatusPort = 1207
 ListeningAddress = "0.0.0.0"
 BufferSize = 4000
 
+PerfReportIntervalSec = 30
+EnablePerformanceMonitoring = false
+VerboseLogging = false
+
 [[EchoingServers]]
   Label = "WORLD"
-  Port = 1215
+  Port = 1255
 
 [[EchoingServers]]
   Label = "WORLD_OLD"
-  Port = 1255
+  Port = 1215
