@@ -1,7 +1,6 @@
-package status_test
+package status
 
 import (
-	"ChromehoundsStatusServer/status"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -11,7 +10,7 @@ import (
 
 func TestDateStruct(t *testing.T) {
 	byteTarget := []byte{0xE9, 0x07, 0x05, 0xf, 0x02, 0x0a, 0x00, 0x04}
-	strct := status.CreateServerTimeRaw(2025, 05, 0xf, 0x02, 0x0a, 0x00, 0x04)
+	strct := CreateServerTimeRaw(2025, 05, 0xf, 0x02, 0x0a, 0x00, 0x04)
 
 	buffer := encodeToBuffer(strct, len(byteTarget), t)
 	compareBinaryBuffers(byteTarget, buffer, t)
@@ -24,7 +23,7 @@ func TestHeaderStruct(t *testing.T) {
 		'4', 'E', 'A', '2', '5', '0', '6', '3', '0',
 		'0', '0', '0', '0', '0', '0', '1',
 		0x00, 0x00, 0x00, 0x00}
-	strct := status.CreateHeader(status.XuidValueHardCoded)
+	strct := CreateHeader(XuidValueHardCoded)
 
 	buffer := encodeToBuffer(strct, len(byteTarget), t)
 	compareBinaryBuffers(byteTarget, buffer, t)
@@ -44,11 +43,11 @@ func TestStatusStruct(t *testing.T) {
 		0xE9, 0x07, 0x05, 0x0f, 0x05, 0x03, 0x00, 0x00, // Maintenance Ends
 	}
 
-	time := status.CreateServerTimeRaw(2025, 05, 0xf, 0x02, 0x0a, 0x00, 0x04)
-	maintStart := status.CreateServerTimeRaw(2025, 0x05, 0xf, 0x01, 0x03, 0x00, 0x04)
-	maintEnd := status.CreateServerTimeRaw(2025, 0x05, 0xf, 0x05, 0x03, 0x00, 0x00)
+	time := CreateServerTimeRaw(2025, 05, 0xf, 0x02, 0x0a, 0x00, 0x04)
+	maintStart := CreateServerTimeRaw(2025, 0x05, 0xf, 0x01, 0x03, 0x00, 0x04)
+	maintEnd := CreateServerTimeRaw(2025, 0x05, 0xf, 0x05, 0x03, 0x00, 0x00)
 
-	strct := status.CreateStatusRaw(status.XuidValueHardCoded, time, maintStart, maintEnd)
+	strct := CreateStatusRaw(XuidValueHardCoded, time, maintStart, maintEnd)
 
 	buffer := encodeToBuffer(strct, len(byteTarget), t)
 	compareBinaryBuffers(byteTarget, buffer, t)
