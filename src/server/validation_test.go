@@ -1,6 +1,7 @@
-package main
+package server
 
 import (
+	"ChromehoundsStatusServer/constants"
 	"net"
 	"testing"
 )
@@ -18,7 +19,7 @@ func TestValidateStatusPacket(t *testing.T) {
 		{
 			name: "Valid packet",
 			packet: func() []byte {
-				p := make([]byte, MinHelloMessageSize)
+				p := make([]byte, constants.MinHelloMessageSize)
 				copy(p[0:4], ChromeHoundsHeader[:])
 				return p
 			}(),
@@ -26,20 +27,20 @@ func TestValidateStatusPacket(t *testing.T) {
 		},
 		{
 			name:        "Packet too small",
-			packet:      make([]byte, MinHelloMessageSize-1),
+			packet:      make([]byte, constants.MinHelloMessageSize-1),
 			expectError: true,
 			errorReason: "packet too small",
 		},
 		{
 			name:        "Packet too large",
-			packet:      make([]byte, MaxBufferSize+1),
+			packet:      make([]byte, constants.MaxBufferSize+1),
 			expectError: true,
 			errorReason: "packet too large",
 		},
 		{
 			name: "Valid Chromehounds header",
 			packet: func() []byte {
-				p := make([]byte, MinHelloMessageSize)
+				p := make([]byte, constants.MinHelloMessageSize)
 				copy(p[0:4], ChromeHoundsHeader[:])
 				return p
 			}(),
@@ -48,7 +49,7 @@ func TestValidateStatusPacket(t *testing.T) {
 		{
 			name: "Invalid Chromehounds header",
 			packet: func() []byte {
-				p := make([]byte, MinHelloMessageSize)
+				p := make([]byte, constants.MinHelloMessageSize)
 				p[0] = 'X'
 				p[1] = 'Y'
 				return p
@@ -102,12 +103,12 @@ func TestValidateEchoPacket(t *testing.T) {
 		},
 		{
 			name:        "Packet too large",
-			packet:      make([]byte, MaxBufferSize+1),
+			packet:      make([]byte, constants.MaxBufferSize+1),
 			expectError: true,
 		},
 		{
 			name:        "Maximum valid size",
-			packet:      make([]byte, MaxBufferSize),
+			packet:      make([]byte, constants.MaxBufferSize),
 			expectError: false,
 		},
 	}

@@ -1,9 +1,8 @@
 package config
 
 import (
-	"os"
-
 	"ChromehoundsStatusServer/logging"
+	"os"
 
 	"github.com/BurntSushi/toml"
 )
@@ -13,16 +12,22 @@ type Config struct {
 	ListeningAddress  string
 	DefaultBufferSize int
 	Servers           []ServerConfig
+	Logging           LoggingConfig
 }
 
 // Definition of configuration for specific service running at a port.
 // if buffersize is left at 0, it will use default value.
 type ServerConfig struct {
-	Label      string
-	Port       int
-	Enabled    bool
-	Type       ServerType
-	BufferSize int
+	Label   string
+	Port    int
+	Enabled bool
+	Type    ServerType
+}
+
+type LoggingConfig struct {
+	EnablePerformanceMonitoring bool
+	PerformanceReportInterval   int
+	Verbose                     bool
 }
 
 type ServerType string

@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func buildUDPListener(listenAddress net.IP, listenPort int, label string) (*net.UDPConn, error) {
+func buildUDPListener(listenAddress net.IP, listenPort int, label string, bufferSize int) (*net.UDPConn, error) {
 	addr := net.UDPAddr{
 		Port: listenPort,
 		IP:   listenAddress,
@@ -18,12 +18,13 @@ func buildUDPListener(listenAddress net.IP, listenPort int, label string) (*net.
 		logging.Error.Printf("[%s] Failed to bind: %v\n", label, err)
 		return nil, nil
 	}
-	logging.Info.Printf("[%s] UDP Server is listening on port %d\n", label, listenPort)
+
+	logging.LogServerStart(label, listenPort, bufferSize)
 	return conn, nil
 }
 
 func readUDP(conn *net.UDPConn, buffer *[]byte, label string) (int, *net.UDPAddr, error) {
-	conn.SetReadDeadline(time.Now().Add((1 * time.Second)))
+	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	n, clientAddr, err := conn.ReadFromUDP(*buffer)
 	if err != nil {
 		if ne, ok := err.(net.Error); ok && ne.Timeout() {
@@ -32,6 +33,7 @@ func readUDP(conn *net.UDPConn, buffer *[]byte, label string) (int, *net.UDPAddr
 		}
 		return 0, nil, err
 	} else if n == 0 {
+
 		return 0, nil, fmt.Errorf("0 bytes recieved, but still recieved")
 	}
 	logging.Info.Printf("[%s] Received from %s:%d -> %s\n",
@@ -47,8 +49,7 @@ func sendUDP(conn *net.UDPConn, clientAddr *net.UDPAddr, buffer *[]byte, label s
 	}
 
 	if logSend {
-		logging.Info.Printf("[%s] Sent %d bytes to %s:%d\n",
-			label, bytesSent, clientAddr.IP, clientAddr.Port)
+		logging.LogPacketSent(label, clientAddr, bytesSent)
 	}
 	return nil
 }

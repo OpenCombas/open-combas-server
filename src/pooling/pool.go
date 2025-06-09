@@ -1,6 +1,8 @@
-package main
+package pooling
 
 import (
+	"ChromehoundsStatusServer/constants"
+	"ChromehoundsStatusServer/logging"
 	"sync"
 )
 
@@ -37,15 +39,15 @@ func (bp *BufferPool) Put(buf []byte) {
 
 // Global buffer pools for different use cases
 var (
-	statusResponsePool *BufferPool
-	readBufferPool     *BufferPool
+	StatusResponsePool *BufferPool
+	ReadBufferPool     *BufferPool
 )
 
 // InitBufferPools initializes the global buffer pools
 func InitBufferPools(bufferSize int) {
-	statusResponsePool = NewBufferPool(StatusResponseSize)
-	readBufferPool = NewBufferPool(bufferSize)
+	StatusResponsePool = NewBufferPool(constants.StatusResponseSize)
+	ReadBufferPool = NewBufferPool(bufferSize)
 
-	Info.Printf("Initialized buffer pools - read: %d bytes, status: %d bytes",
-		bufferSize, StatusResponseSize)
+	logging.Info.Printf("Initialized buffer pools - read: %d bytes, status: %d bytes",
+		bufferSize, constants.StatusResponseSize)
 }

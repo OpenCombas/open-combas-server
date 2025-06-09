@@ -1,6 +1,8 @@
-package main
+package profiling
 
 import (
+	"ChromehoundsStatusServer/config"
+	"ChromehoundsStatusServer/logging"
 	"fmt"
 	"runtime"
 	"sync"
@@ -156,7 +158,7 @@ func (pm *PerformanceMonitor) StartPeriodicReporting(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	go func() {
 		for range ticker.C {
-			LogPerformanceMetric("MONITOR", "periodic_stats", pm.GetStats())
+			logging.LogPerformanceMetric("MONITOR", "periodic_stats", pm.GetStats())
 		}
 	}()
 }
@@ -173,6 +175,7 @@ func PrintGlobalStats() {
 	globalPerfMonitor.PrintStats()
 }
 
-func StartGlobalReporting(interval time.Duration) {
+func StartGlobalReporting(cfg *config.LoggingConfig) {
+	var interval = time.Second * time.Duration(cfg.PerformanceReportInterval)
 	globalPerfMonitor.StartPeriodicReporting(interval)
 }
