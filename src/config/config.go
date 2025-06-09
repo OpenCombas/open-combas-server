@@ -64,7 +64,20 @@ func LoadConfig() Config {
 			conf = generateDefaultConfig()
 		}
 	}
+	validateAndFix(&conf)
+
 	return conf
+}
+
+func validateAndFix(config *Config) {
+	if config.Logging.PerformanceReportInterval <= 0 {
+		logging.Warn.Printf("[CONFIG] impossible value for reporting interval: %ds, fallback to 10s", config.Logging.PerformanceReportInterval)
+		config.Logging.PerformanceReportInterval = 10
+	}
+
+	if len(config.Servers) == 0 {
+		logging.Warn.Printf("[CONFIG] No servers declared!")
+	}
 }
 
 func generateDefaultConfig() Config {
@@ -90,6 +103,11 @@ func generateDefaultConfig() Config {
 				Enabled: true,
 				Type:    Status,
 			},
+		},
+		Logging: LoggingConfig{
+			Verbose:                     false,
+			PerformanceReportInterval:   10,
+			EnablePerformanceMonitoring: true,
 		},
 	}
 }
