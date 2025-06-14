@@ -97,7 +97,7 @@ func RunStatusServer(listenAddress net.IP, serverConfig *config.ServerConfig, bu
 func createStatusResponse(readBuffer *[]byte, label string, enablePerformanceMonitoring bool) (*[]byte, error) {
 	var startTime = time.Now()
 
-	offset := time.Minute * 10
+	offset := time.Hour * 12
 
 	var helloBuffer []byte = (*readBuffer)[0:31]
 	var helloStruct status.UserHelloMessage

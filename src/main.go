@@ -19,6 +19,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	var cfg = config.LoadConfig()
+	logging.Info.Println("Config Loaded")
 
 	// Initialize buffer pools for performance
 	pooling.InitBufferPools(cfg.DefaultBufferSize)
@@ -29,8 +30,8 @@ func main() {
 		logging.Info.Println("Performance monitoring enabled")
 		defer profiling.PrintGlobalStats()
 	}
+
 	logging.Info.Println("App started")
-	logging.Info.Println("Config Loaded")
 	var address = net.ParseIP(cfg.ListeningAddress)
 	for _, serverConfig := range cfg.Servers {
 		if serverConfig.Enabled {
