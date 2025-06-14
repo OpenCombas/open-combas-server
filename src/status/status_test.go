@@ -53,7 +53,8 @@ func TestStatusStruct(t *testing.T) {
 	compareBinaryBuffers(byteTarget, buffer, t)
 }
 
-// use this with structs only of fixed size
+// encode struct to buffer. use this with structs only of fixed size as there's no type checking for that included!
+// reports test error in case of failure
 func encodeToBuffer[T any](strct T, size int, t *testing.T) []byte {
 	buffer := make([]byte, size)
 	if _, err := binary.Encode(buffer, binary.LittleEndian, strct); err != nil {
@@ -62,6 +63,7 @@ func encodeToBuffer[T any](strct T, size int, t *testing.T) []byte {
 	return buffer
 }
 
+// Helper test method that also marks bytes that differ with convinient tags in test result
 func compareBinaryBuffers(expected []byte, result []byte, t *testing.T) {
 
 	if len(expected) != len(result) {
@@ -85,6 +87,7 @@ func compareBinaryBuffers(expected []byte, result []byte, t *testing.T) {
 	}
 }
 
+// convert byte[] to human readable string in format where each byte becomes: \xFF
 func encodeHex(buf []byte) string {
 	parts := make([]string, len(buf))
 	for i, b := range buf {

@@ -1,6 +1,7 @@
-package main
+package pooling
 
 import (
+	"ChromehoundsStatusServer/constants"
 	"sync"
 	"testing"
 )
@@ -89,26 +90,26 @@ func TestInitBufferPools(t *testing.T) {
 	InitBufferPools(bufferSize)
 
 	// Test that global pools are initialized
-	if statusResponsePool == nil {
+	if StatusResponsePool == nil {
 		t.Error("statusResponsePool should be initialized")
 	}
 
-	if readBufferPool == nil {
+	if ReadBufferPool == nil {
 		t.Error("readBufferPool should be initialized")
 	}
 
 	// Test that we can get buffers from global pools
-	statusBuf := statusResponsePool.Get()
-	if len(statusBuf) != StatusResponseSize {
-		t.Errorf("Expected status buffer size %d, got %d", StatusResponseSize, len(statusBuf))
+	statusBuf := StatusResponsePool.Get()
+	if len(statusBuf) != constants.StatusResponseSize {
+		t.Errorf("Expected status buffer size %d, got %d", constants.StatusResponseSize, len(statusBuf))
 	}
 
-	readBuf := readBufferPool.Get()
+	readBuf := ReadBufferPool.Get()
 	if len(readBuf) != bufferSize {
 		t.Errorf("Expected read buffer size %d, got %d", bufferSize, len(readBuf))
 	}
 
 	// Clean up
-	statusResponsePool.Put(statusBuf)
-	readBufferPool.Put(readBuf)
+	StatusResponsePool.Put(statusBuf)
+	ReadBufferPool.Put(readBuf)
 }
