@@ -4,12 +4,20 @@ import (
 	"time"
 )
 
+// quite probably matches the struct used by server
+// possibly they use CHxx format for magic value, with xx being dependant on service.
+//
+// 31 bytes
 type UserHelloMessage struct {
 	ChromeHounds [4]byte //'C', 'H', 0x00, 0x00
 	Xuid         [15]byte
 	Unknown      [12]byte
 }
 
+// struct representing DateTime used by CH
+// Flag is unknown. seen values 0x00, 0x04
+//
+// 8 bytes
 type ServerTime struct {
 	Year   uint16
 	Month  uint8
@@ -20,15 +28,22 @@ type ServerTime struct {
 	Flag   byte
 }
 
+// quite probably matches the struct used by client
+// possibly they use CHxx format for magic value, with xx being dependant on service
+//
+// 31 bytes
 type StatusHeader struct {
 	ChromeHounds [4]byte
 	Xuid         [15]byte
 	Unknown      [12]byte
 }
 
+// Main server state strucutre used by Status server to notify client of maintenance
+//
+// 64 bytes
 type ServerState struct {
 	Header                     StatusHeader
-	Unknown                    byte
+	Unknown                    byte //possible member of header - would make it 32byte aligned
 	GameSeason                 [4]byte
 	ProgramVersion             [4]byte
 	ServerLocalTime            ServerTime
@@ -36,17 +51,26 @@ type ServerState struct {
 	ServerMaintenanceEndTime   ServerTime
 }
 
+// Magic numbers for status service
 var chromeHoundsHeaderValue = [4]byte{'C', 'H', '0', '0'}
+
+// hardcoded xuid for fallback
 var XuidValueHardCoded = [15]byte{
 	'0', '0', '9', '0', '0', '0', '0',
 	'4', 'E', 'A', '2', '5', '0', '6',
 	'3'}
+
+// unknown so far
 var unknownHeaderValue = [12]byte{
 	'0',
 	'0', '0', '0', '0', '0', '0', '1', 0x00, 0x00, 0x00,
 	0x00,
 }
+
+// exact game season value, big endian value of 3.
 var gameSeasonValue = [4]byte{0x03, 0x00, 0x00, 0x00}
+
+// version value, only this exact value works. big endian.
 var programVersionValue = [4]byte{0x00, 0x00, 0x10, 0x00}
 
 func CreateHeader(xuid [15]byte) StatusHeader {
@@ -57,6 +81,7 @@ func CreateHeader(xuid [15]byte) StatusHeader {
 	}
 }
 
+// Creates Servertime based on raw values, just for testing purposes
 func CreateServerTimeRaw(year uint16, month uint8, day uint8, hour uint8, minute uint8, second uint8, flag byte) ServerTime {
 	return ServerTime{
 		Year:   year,
@@ -69,6 +94,7 @@ func CreateServerTimeRaw(year uint16, month uint8, day uint8, hour uint8, minute
 	}
 }
 
+// internal method for creating server time struct based on a timestamp
 func createServerTime(time time.Time, flag byte) ServerTime {
 	return ServerTime{
 
@@ -82,6 +108,7 @@ func createServerTime(time time.Time, flag byte) ServerTime {
 	}
 }
 
+// Create Status structure. used to respond to client via Status api
 func CreateStatus(xuid [15]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid),
@@ -94,6 +121,7 @@ func CreateStatus(xuid [15]byte, serverTime time.Time, maintenanceStart time.Tim
 	}
 }
 
+// create Status with reference to server time set externally. useful for testing.
 func CreateStatusRaw(xuid [15]byte, local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid),
