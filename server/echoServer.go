@@ -11,9 +11,16 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-func RunEchoingServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup) {
+func RunEchoingServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, reg prometheus.Registerer) {
+	echoResponsesHandled := promauto.With(reg).NewCounter(prometheus.CounterOpts{
+		Name: "echo_responses_handle",
+		Help: "Number of echo responses handled",
+	})
 	wg.Add(1)
 	defer wg.Done()
 	// Pre-compute config flags to avoid pointer dereferencing in hot path
@@ -79,6 +86,7 @@ func RunEchoingServer(listenAddress net.IP, serverConfig *config.ServerConfig, b
 			}
 
 			sendUDP(conn, clientAddr, &packet, label, false)
+			echoResponsesHandled.Inc()
 		}
 	}
 }

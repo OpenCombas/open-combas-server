@@ -8,9 +8,14 @@ import (
 	"ChromehoundsStatusServer/server"
 	"context"
 	"net"
+	"net/http"
 	"os/signal"
 	"sync"
 	"syscall"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 var wg sync.WaitGroup
@@ -23,6 +28,18 @@ func main() {
 
 	// Initialize buffer pools for performance
 	pooling.InitBufferPools(cfg.DefaultBufferSize)
+
+	// Initialize Prometheus Metrics registry
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+
+	if cfg.Prometheus.ExposePrometheusMetrics {
+		http.Handle(cfg.Prometheus.PrometheusHttpPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+		go http.ListenAndServe(cfg.Prometheus.PrometheusListenAddress, nil)
+	}
 
 	// Start performance monitoring if enabled
 	if cfg.Logging.EnablePerformanceMonitoring {
@@ -37,9 +54,9 @@ func main() {
 		if serverConfig.Enabled {
 			switch serverConfig.Type {
 			case config.Status:
-				go server.RunStatusServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
+				go server.RunStatusServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 			case config.Echoing:
-				go server.RunEchoingServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
+				go server.RunEchoingServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 			default:
 				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)
 			}
