@@ -31,12 +31,14 @@ func main() {
 
 	// Initialize Prometheus Metrics registry
 	reg := prometheus.NewRegistry()
-	reg.MustRegister(
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	)
+	if cfg.Prometheus.EnableGoProfiling && cfg.Prometheus.Enabled {
+		reg.MustRegister(
+			collectors.NewGoCollector(),
+			collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+		)
+	}
 
-	if cfg.Prometheus.ExposePrometheusMetrics {
+	if cfg.Prometheus.Enabled {
 		http.Handle(cfg.Prometheus.PrometheusHttpPath, promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
 		go http.ListenAndServe(cfg.Prometheus.PrometheusListenAddress, nil)
 	}
@@ -54,9 +56,9 @@ func main() {
 		if serverConfig.Enabled {
 			switch serverConfig.Type {
 			case config.Status:
-				go server.RunStatusServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go server.RunStatusServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 			case config.Echoing:
-				go server.RunEchoingServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go server.RunEchoingServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 			default:
 				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)
 			}

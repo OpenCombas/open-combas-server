@@ -32,7 +32,8 @@ type LoggingConfig struct {
 }
 
 type PrometheusConfig struct {
-	ExposePrometheusMetrics bool
+	Enabled                 bool
+	EnableGoProfiling       bool
 	PrometheusListenAddress string
 	PrometheusHttpPath      string
 }
@@ -117,7 +118,8 @@ func generateDefaultConfig() Config {
 			EnablePerformanceMonitoring: true,
 		},
 		Prometheus: PrometheusConfig{
-			ExposePrometheusMetrics: true,
+			Enabled:                 true,
+			EnableGoProfiling:       true,
 			PrometheusListenAddress: "0.0.0.0:9090",
 			PrometheusHttpPath:      "/metrics",
 		},

@@ -18,7 +18,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-func RunStatusServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, reg prometheus.Registerer) {
+func RunStatusServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) {
 	statusResponsesHandled := promauto.With(reg).NewCounter(prometheus.CounterOpts{
 		Name: "status_responses_handled_total",
 		Help: "Total number of status responses handled",
@@ -97,7 +97,9 @@ func RunStatusServer(listenAddress net.IP, serverConfig *config.ServerConfig, bu
 			}
 
 			sendUDP(conn, clientAddr, sendBuffer, label, true)
-			statusResponsesHandled.Inc()
+			if promConfig.Enabled {
+				statusResponsesHandled.Inc()
+			}
 		}
 	}
 }

@@ -16,7 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-func RunEchoingServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, reg prometheus.Registerer) {
+func RunEchoingServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) {
 	echoResponsesHandled := promauto.With(reg).NewCounter(prometheus.CounterOpts{
 		Name: "echo_responses_handled_total",
 		Help: "Total number of echo responses handled",
@@ -86,7 +86,9 @@ func RunEchoingServer(listenAddress net.IP, serverConfig *config.ServerConfig, b
 			}
 
 			sendUDP(conn, clientAddr, &packet, label, false)
-			echoResponsesHandled.Inc()
+			if promConfig.Enabled {
+				echoResponsesHandled.Inc()
+			}
 		}
 	}
 }
