@@ -20,8 +20,8 @@ import (
 
 func RunStatusServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, reg prometheus.Registerer) {
 	statusResponsesHandled := promauto.With(reg).NewCounter(prometheus.CounterOpts{
-		Name: "status_responses_handle",
-		Help: "Number of status responses handled",
+		Name: "status_responses_handled_total",
+		Help: "Total number of status responses handled",
 	})
 	wg.Add(1)
 	defer wg.Done()
