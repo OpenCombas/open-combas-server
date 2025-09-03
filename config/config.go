@@ -13,6 +13,7 @@ type Config struct {
 	DefaultBufferSize int
 	Servers           []ServerConfig
 	Logging           LoggingConfig
+	Prometheus        PrometheusConfig
 }
 
 // Definition of configuration for specific service running at a port.
@@ -28,6 +29,13 @@ type LoggingConfig struct {
 	EnablePerformanceMonitoring bool
 	PerformanceReportInterval   int
 	Verbose                     bool
+}
+
+type PrometheusConfig struct {
+	Enabled                 bool
+	EnableGoProfiling       bool
+	PrometheusListenAddress string
+	PrometheusHttpPath      string
 }
 
 type ServerType string
@@ -108,6 +116,12 @@ func generateDefaultConfig() Config {
 			Verbose:                     false,
 			PerformanceReportInterval:   10,
 			EnablePerformanceMonitoring: true,
+		},
+		Prometheus: PrometheusConfig{
+			Enabled:                 true,
+			EnableGoProfiling:       true,
+			PrometheusListenAddress: "0.0.0.0:9090",
+			PrometheusHttpPath:      "/metrics",
 		},
 	}
 }
