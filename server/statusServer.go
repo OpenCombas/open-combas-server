@@ -107,7 +107,8 @@ func RunStatusServer(listenAddress net.IP, serverConfig *config.ServerConfig, bu
 func createStatusResponse(readBuffer *[]byte, label string, enablePerformanceMonitoring bool) (*[]byte, error) {
 	var startTime = time.Now()
 
-	offset := time.Hour * 12
+	start_offset := time.Hour * 12
+	end_offset := time.Hour * 24
 
 	var helloBuffer []byte = (*readBuffer)[0:31]
 	var helloStruct status.UserHelloMessage
@@ -117,7 +118,7 @@ func createStatusResponse(readBuffer *[]byte, label string, enablePerformanceMon
 		helloStruct.Xuid = status.XuidValueHardCoded
 	}
 
-	responseStruct := status.CreateStatus(helloStruct.Xuid, startTime, startTime.Add(-offset), startTime.Add(offset))
+	responseStruct := status.CreateStatus(helloStruct.Xuid, startTime, startTime.Add(start_offset), startTime.Add(end_offset))
 
 	// Use buffer pool for response
 	sendBuffer := pooling.StatusResponsePool.Get()

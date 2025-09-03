@@ -103,7 +103,7 @@ func createServerTime(time time.Time, flag byte) ServerTime {
 		Day:    uint8(time.Day()),
 		Hour:   uint8(time.Hour()),
 		Minute: uint8(time.Minute()),
-		Second: uint8(time.Second()),
+		Second: uint8(0x00),
 		Flag:   flag,
 	}
 }
