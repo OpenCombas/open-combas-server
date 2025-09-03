@@ -106,6 +106,18 @@ func generateDefaultConfig() Config {
 				Type:    Echoing,
 			},
 			{
+				Label:   "SQUAD_REG",
+				Port:    1244,
+				Enabled: true,
+				Type:    Echoing,
+			},
+			{
+				Label:   "SQUAD_REG_OLD",
+				Port:    1244,
+				Enabled: true,
+				Type:    Echoing,
+			},
+			{
 				Label:   "STATUS",
 				Port:    1207,
 				Enabled: true,
