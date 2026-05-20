@@ -68,7 +68,7 @@ var unknownHeaderValue = [12]byte{
 }
 
 // exact game season value, big endian value of 3.
-var gameSeasonValue = [4]byte{0x03, 0x00, 0x00, 0x00}
+var gameSeasonValue = [4]byte{0x72, 0x00, 0x00, 0x00}
 
 // version value, only this exact value works. big endian.
 var programVersionValue = [4]byte{0x00, 0x00, 0x10, 0x00}

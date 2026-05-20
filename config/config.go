@@ -43,6 +43,7 @@ type ServerType string
 const (
 	Echoing ServerType = "Echoing"
 	Status  ServerType = "Status"
+	Buffer  ServerType = "Buffer"
 )
 
 var configFilename = "config.toml"
