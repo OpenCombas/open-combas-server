@@ -27,4 +27,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         run: |
-          gh release upload ${{ github.event.release.tag }} ./open-combas-server
+          gh release upload ${{ github.event.release.tag_name }} ./open-combas-server
