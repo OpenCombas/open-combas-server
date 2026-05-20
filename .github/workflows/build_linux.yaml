@@ -1,0 +1,30 @@
+name: build linux
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    env:
+      GO_VERSION: "1.24"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Setup Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: Install dependencies
+        run: |
+          go get .
+      - name: Build
+        run: |
+          go build -o open-combas-server .
+      - name: Upload Artifacts
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+        run: |
+          gh release upload ${{ github.event.release.tag }} ./open-combas-server
