@@ -71,7 +71,7 @@ func main() {
 	}
 	for _, orderedMessageServerConfig := range cfg.OrderedMessageServers {
 		if orderedMessageServerConfig.Enabled {
-			go server.RunBufferServer(address, &orderedMessageServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
+			go server.RunOrderedMessageServer(address, &orderedMessageServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(orderedMessageServerConfig.Type), "server_name": string(orderedMessageServerConfig.Label)}, reg))
 		}
 	}
 

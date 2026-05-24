@@ -110,7 +110,7 @@ func createStatusResponse(readBuffer *[]byte, label string, enablePerformanceMon
 	start_offset := time.Hour * 12
 	end_offset := time.Hour * 24
 
-	var helloBuffer []byte = (*readBuffer)[0:31]
+	var helloBuffer []byte = (*readBuffer)[0:32]
 	var helloStruct status.UserHelloMessage
 
 	if _, err := binary.Decode(helloBuffer, binary.LittleEndian, &helloStruct); err != nil {

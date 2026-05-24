@@ -1,6 +1,7 @@
 package status
 
 import (
+	"bytes"
 	"encoding/hex"
 	"time"
 )
@@ -52,7 +53,6 @@ type OrderedHeader struct {
 // 64 bytes
 type ServerState struct {
 	Header                     StatusHeader
-	Unknown                    byte //possible member of header - would make it 32byte aligned
 	GameSeason                 [4]byte
 	ProgramVersion             [4]byte
 	ServerLocalTime            ServerTime
@@ -85,7 +85,7 @@ var headerTerminatorValue = [4]byte{
 // 64 bytes
 type OrderedMessage struct {
 	Header OrderedHeader
-	Body   []byte
+	Body   [500]byte
 }
 
 // exact game season value, big endian value of 3.
@@ -142,7 +142,6 @@ func createServerTime(time time.Time, flag byte) ServerTime {
 func CreateStatus(xuid [16]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid),
-		Unknown:                    0x00,
 		GameSeason:                 gameSeasonValue,
 		ProgramVersion:             programVersionValue,
 		ServerLocalTime:            createServerTime(serverTime, 0x04),
@@ -155,7 +154,6 @@ func CreateStatus(xuid [16]byte, serverTime time.Time, maintenanceStart time.Tim
 func CreateStatusRaw(xuid [16]byte, local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid),
-		Unknown:                    0x00,
 		GameSeason:                 gameSeasonValue,
 		ProgramVersion:             programVersionValue,
 		ServerLocalTime:            local,
@@ -166,12 +164,16 @@ func CreateStatusRaw(xuid [16]byte, local ServerTime, maintStart ServerTime, mai
 
 // Create OrderedMessage structure. used to respond to calls from client allowing arbitary data from config
 func CreateOrderedMessage(xuid [16]byte, order [8]byte, body string) OrderedMessage {
-	messageBody, err := hex.DecodeString(body)
+	message, err := hex.DecodeString(body)
 	if err != nil {
 		panic(err)
 	}
+	zeroPadding := bytes.Repeat([]byte{0x00}, 500-len(message))
+	messageBody := append(message, zeroPadding...)
+	var fixedLengthMessage [500]byte
+	copy(fixedLengthMessage[:], messageBody)
 	return OrderedMessage{
 		Header: CreateOrderedHeader(xuid, order),
-		Body:   messageBody,
+		Body:   fixedLengthMessage,
 	}
 }

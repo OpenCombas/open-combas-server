@@ -107,7 +107,7 @@ func RunOrderedMessageServer(listenAddress net.IP, serverConfig *config.BufferSe
 func createOrderedResponse(readBuffer *[]byte, label string, bufferContent string, enablePerformanceMonitoring bool) (*[]byte, error) {
 	var startTime = time.Now()
 
-	var helloBuffer []byte = (*readBuffer)[0:31]
+	var helloBuffer []byte = (*readBuffer)[:32]
 	var helloStruct status.UserHelloMessage
 
 	if _, err := binary.Decode(helloBuffer, binary.LittleEndian, &helloStruct); err != nil {
@@ -122,7 +122,8 @@ func createOrderedResponse(readBuffer *[]byte, label string, bufferContent strin
 	defer pooling.StatusResponsePool.Put(sendBuffer)
 
 	// Create a copy for return since we're putting the buffer back in the pool
-	responseBuffer := make([]byte, constants.StatusResponseSize)
+	// I know this is unsafe, but this server's purpose is only for experimentation
+	responseBuffer := make([]byte, constants.OrderedMessageSize)
 
 	if _, err := binary.Encode(responseBuffer, binary.LittleEndian, responseStruct); err != nil {
 		logging.Warn.Printf("[%s] Error populating sendbuffer: %s", label, err)
