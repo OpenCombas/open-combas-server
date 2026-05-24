@@ -7,12 +7,13 @@ import (
 	"ChromehoundsStatusServer/pooling"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"net"
 	"sync"
 	"time"
 )
 
-func RunBufferServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup) {
+func RunBufferServer(listenAddress net.IP, serverConfig *config.BufferServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup) {
 	wg.Add(1)
 	defer wg.Done()
 	// Pre-compute config flags to avoid pointer dereferencing in hot path
@@ -62,8 +63,11 @@ func RunBufferServer(listenAddress net.IP, serverConfig *config.ServerConfig, bu
 				logging.LogPacketReceived(label, clientAddr, n, processingTime)
 			}
 
-			customBuffer := []byte{0x43, 0x48, 0x00, 0x00, 0x30, 0x30, 0x30, 0x39, 0x30, 0x30, 0x30, 0x30, 0x34, 0x45, 0x39, 0x32, 0x42, 0x41, 0x44, 0x44, 0x00, 0x00, 0x00, 0x00}
-			zeroPadding := bytes.Repeat([]byte{0x48}, 500)
+			customBuffer, err := hex.DecodeString(serverConfig.BufferContent)
+			if err != nil {
+				panic(err)
+			}
+			zeroPadding := bytes.Repeat([]byte{0x48}, serverConfig.ZeroPadding)
 			sendBuffer := append(customBuffer, zeroPadding...)
 			if err != nil {
 				if verboseLogging {

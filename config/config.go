@@ -12,6 +12,7 @@ type Config struct {
 	ListeningAddress  string
 	DefaultBufferSize int
 	Servers           []ServerConfig
+	BufferServers     []BufferServerConfig
 	Logging           LoggingConfig
 	Prometheus        PrometheusConfig
 }
@@ -23,6 +24,12 @@ type ServerConfig struct {
 	Port    int
 	Enabled bool
 	Type    ServerType
+}
+
+type BufferServerConfig struct {
+	ServerConfig
+	BufferContent string
+	ZeroPadding   int
 }
 
 type LoggingConfig struct {
@@ -107,22 +114,50 @@ func generateDefaultConfig() Config {
 				Type:    Echoing,
 			},
 			{
-				Label:   "SQUAD_REG",
-				Port:    1244,
-				Enabled: true,
-				Type:    Echoing,
-			},
-			{
-				Label:   "SQUAD_REG_OLD",
-				Port:    1244,
-				Enabled: true,
-				Type:    Echoing,
-			},
-			{
 				Label:   "STATUS",
 				Port:    1207,
 				Enabled: true,
 				Type:    Status,
+			},
+			{
+				Label:   "SQUAD_LOGIN_OLD",
+				Port:    1204,
+				Enabled: true,
+				Type:    Echoing,
+			},
+			{
+				Label:   "SQUAD_LOGIN",
+				Port:    1244,
+				Enabled: true,
+				Type:    Echoing,
+			},
+			{
+				Label:   "SQUAD_NEWS",
+				Port:    1216,
+				Enabled: true,
+				Type:    Echoing,
+			},
+		},
+		BufferServers: []BufferServerConfig{
+			{
+				ServerConfig: ServerConfig{
+					Label:   "SQUAD_REG",
+					Port:    1241,
+					Enabled: true,
+					Type:    Buffer,
+				},
+				BufferContent: "434800003030303930303030344539324241444400000000",
+				ZeroPadding:   500,
+			},
+			{
+				ServerConfig: ServerConfig{
+					Label:   "SQUAD_REG_OLD",
+					Port:    1201,
+					Enabled: true,
+					Type:    Buffer,
+				},
+				BufferContent: "434800003030303930303030344539324241444400000000",
+				ZeroPadding:   500,
 			},
 		},
 		Logging: LoggingConfig{

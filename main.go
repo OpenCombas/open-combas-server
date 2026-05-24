@@ -59,11 +59,14 @@ func main() {
 				go server.RunStatusServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 			case config.Echoing:
 				go server.RunEchoingServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
-			case config.Buffer:
-				go server.RunBufferServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
 			default:
 				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)
 			}
+		}
+	}
+	for _, bufferServerConfig := range cfg.BufferServers {
+		if bufferServerConfig.Enabled {
+			go server.RunBufferServer(address, &bufferServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
 		}
 	}
 
