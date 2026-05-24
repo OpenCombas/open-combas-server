@@ -67,7 +67,7 @@ func RunBufferServer(listenAddress net.IP, serverConfig *config.BufferServerConf
 			if err != nil {
 				panic(err)
 			}
-			zeroPadding := bytes.Repeat([]byte{0x48}, serverConfig.ZeroPadding)
+			zeroPadding := bytes.Repeat([]byte{0x30}, serverConfig.ZeroPadding)
 			sendBuffer := append(customBuffer, zeroPadding...)
 			if err != nil {
 				if verboseLogging {

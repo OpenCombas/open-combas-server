@@ -1,6 +1,7 @@
 package status
 
 import (
+	"encoding/hex"
 	"time"
 )
 
@@ -9,9 +10,10 @@ import (
 //
 // 31 bytes
 type UserHelloMessage struct {
-	ChromeHounds [4]byte //'C', 'H', 0x00, 0x00
-	Xuid         [15]byte
-	Unknown      [12]byte
+	ChromeHounds     [4]byte //'C', 'H', 0x00, 0x00
+	Xuid             [16]byte
+	Order            [8]byte
+	HeaderTerminator [4]byte
 }
 
 // struct representing DateTime used by CH
@@ -34,8 +36,15 @@ type ServerTime struct {
 // 31 bytes
 type StatusHeader struct {
 	ChromeHounds [4]byte
-	Xuid         [15]byte
+	Xuid         [16]byte
 	Unknown      [12]byte
+}
+
+type OrderedHeader struct {
+	ChromeHounds     [4]byte
+	Xuid             [16]byte
+	Order            [8]byte
+	HeaderTerminator [4]byte
 }
 
 // Main server state strucutre used by Status server to notify client of maintenance
@@ -52,11 +61,11 @@ type ServerState struct {
 }
 
 // Magic numbers for status service
-var chromeHoundsHeaderValue = [4]byte{'C', 'H', '0', '0'}
+var chromeHoundsHeaderValue = [4]byte{'C', 'H', 0x0, 0x0}
 
 // hardcoded xuid for fallback
-var XuidValueHardCoded = [15]byte{
-	'0', '0', '9', '0', '0', '0', '0',
+var XuidValueHardCoded = [16]byte{
+	'0', '0', '0', '9', '0', '0', '0', '0',
 	'4', 'E', 'A', '2', '5', '0', '6',
 	'3'}
 
@@ -67,17 +76,38 @@ var unknownHeaderValue = [12]byte{
 	0x00,
 }
 
+var headerTerminatorValue = [4]byte{
+	0x00, 0x00, 0x00, 0x00,
+}
+
+// Main server state strucutre used by Status server to notify client of maintenance
+//
+// 64 bytes
+type OrderedMessage struct {
+	Header OrderedHeader
+	Body   []byte
+}
+
 // exact game season value, big endian value of 3.
 var gameSeasonValue = [4]byte{0x72, 0x00, 0x00, 0x00}
 
 // version value, only this exact value works. big endian.
 var programVersionValue = [4]byte{0x00, 0x00, 0x10, 0x00}
 
-func CreateHeader(xuid [15]byte) StatusHeader {
+func CreateHeader(xuid [16]byte) StatusHeader {
 	return StatusHeader{
 		ChromeHounds: chromeHoundsHeaderValue,
 		Xuid:         xuid,
 		Unknown:      unknownHeaderValue,
+	}
+}
+
+func CreateOrderedHeader(xuid [16]byte, order [8]byte) OrderedHeader {
+	return OrderedHeader{
+		ChromeHounds:     chromeHoundsHeaderValue,
+		Xuid:             xuid,
+		Order:            order,
+		HeaderTerminator: headerTerminatorValue,
 	}
 }
 
@@ -109,7 +139,7 @@ func createServerTime(time time.Time, flag byte) ServerTime {
 }
 
 // Create Status structure. used to respond to client via Status api
-func CreateStatus(xuid [15]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
+func CreateStatus(xuid [16]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid),
 		Unknown:                    0x00,
@@ -122,7 +152,7 @@ func CreateStatus(xuid [15]byte, serverTime time.Time, maintenanceStart time.Tim
 }
 
 // create Status with reference to server time set externally. useful for testing.
-func CreateStatusRaw(xuid [15]byte, local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
+func CreateStatusRaw(xuid [16]byte, local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid),
 		Unknown:                    0x00,
@@ -131,5 +161,17 @@ func CreateStatusRaw(xuid [15]byte, local ServerTime, maintStart ServerTime, mai
 		ServerLocalTime:            local,
 		ServerMaintenanceStartTime: maintStart,
 		ServerMaintenanceEndTime:   maintEnd,
+	}
+}
+
+// Create OrderedMessage structure. used to respond to calls from client allowing arbitary data from config
+func CreateOrderedMessage(xuid [16]byte, order [8]byte, body string) OrderedMessage {
+	messageBody, err := hex.DecodeString(body)
+	if err != nil {
+		panic(err)
+	}
+	return OrderedMessage{
+		Header: CreateOrderedHeader(xuid, order),
+		Body:   messageBody,
 	}
 }

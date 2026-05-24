@@ -69,6 +69,11 @@ func main() {
 			go server.RunBufferServer(address, &bufferServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
 		}
 	}
+	for _, orderedMessageServerConfig := range cfg.OrderedMessageServers {
+		if orderedMessageServerConfig.Enabled {
+			go server.RunBufferServer(address, &orderedMessageServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
+		}
+	}
 
 	// Sleep forever (or until manually stopped)
 	<-ctx.Done()

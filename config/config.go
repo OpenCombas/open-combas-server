@@ -9,12 +9,13 @@ import (
 
 // Definition for config of the server itself. Which address to bind to, what is default buffer size, and what services to run.
 type Config struct {
-	ListeningAddress  string
-	DefaultBufferSize int
-	Servers           []ServerConfig
-	BufferServers     []BufferServerConfig
-	Logging           LoggingConfig
-	Prometheus        PrometheusConfig
+	ListeningAddress      string
+	DefaultBufferSize     int
+	Servers               []ServerConfig
+	BufferServers         []BufferServerConfig
+	OrderedMessageServers []BufferServerConfig
+	Logging               LoggingConfig
+	Prometheus            PrometheusConfig
 }
 
 // Definition of configuration for specific service running at a port.
@@ -48,9 +49,10 @@ type PrometheusConfig struct {
 type ServerType string
 
 const (
-	Echoing ServerType = "Echoing"
-	Status  ServerType = "Status"
-	Buffer  ServerType = "Buffer"
+	Echoing        ServerType = "Echoing"
+	Status         ServerType = "Status"
+	Buffer         ServerType = "Buffer"
+	OrderedMessage ServerType = "OrderedMessage"
 )
 
 var configFilename = "config.toml"
@@ -138,7 +140,7 @@ func generateDefaultConfig() Config {
 				Type:    Echoing,
 			},
 		},
-		BufferServers: []BufferServerConfig{
+		OrderedMessageServers: []BufferServerConfig{
 			{
 				ServerConfig: ServerConfig{
 					Label:   "SQUAD_REG",

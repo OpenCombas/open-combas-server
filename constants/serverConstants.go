@@ -2,6 +2,6 @@ package constants
 
 const (
 	StatusResponseSize  = 64
-	MinHelloMessageSize = 31
+	MinHelloMessageSize = 32
 	MaxBufferSize       = 65535
 )
