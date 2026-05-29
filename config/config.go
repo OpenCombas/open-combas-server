@@ -9,13 +9,12 @@ import (
 
 // Definition for config of the server itself. Which address to bind to, what is default buffer size, and what services to run.
 type Config struct {
-	ListeningAddress      string
-	DefaultBufferSize     int
-	Servers               []ServerConfig
-	BufferServers         []BufferServerConfig
-	OrderedMessageServers []BufferServerConfig
-	Logging               LoggingConfig
-	Prometheus            PrometheusConfig
+	ListeningAddress     string
+	DefaultBufferSize    int
+	Servers              []ServerConfig
+	StaticMessageServers []StaticMessageServerConfig
+	Logging              LoggingConfig
+	Prometheus           PrometheusConfig
 }
 
 // Definition of configuration for specific service running at a port.
@@ -27,10 +26,9 @@ type ServerConfig struct {
 	Type    ServerType
 }
 
-type BufferServerConfig struct {
+type StaticMessageServerConfig struct {
 	ServerConfig
 	BufferContent string
-	ZeroPadding   int
 }
 
 type LoggingConfig struct {
@@ -140,7 +138,7 @@ func generateDefaultConfig() Config {
 				Type:    Echoing,
 			},
 		},
-		OrderedMessageServers: []BufferServerConfig{
+		StaticMessageServers: []StaticMessageServerConfig{
 			{
 				ServerConfig: ServerConfig{
 					Label:   "SQUAD_REG",
@@ -149,7 +147,6 @@ func generateDefaultConfig() Config {
 					Type:    Buffer,
 				},
 				BufferContent: "434800003030303930303030344539324241444400000000",
-				ZeroPadding:   500,
 			},
 			{
 				ServerConfig: ServerConfig{
@@ -159,7 +156,6 @@ func generateDefaultConfig() Config {
 					Type:    Buffer,
 				},
 				BufferContent: "434800003030303930303030344539324241444400000000",
-				ZeroPadding:   500,
 			},
 		},
 		Logging: LoggingConfig{

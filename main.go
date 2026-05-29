@@ -56,22 +56,20 @@ func main() {
 		if serverConfig.Enabled {
 			switch serverConfig.Type {
 			case config.Status:
-				go server.RunStatusServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				srv := server.NewStatusServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
 			case config.Echoing:
-				go server.RunEchoingServer(address, &serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				srv := server.NewEchoServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
 			default:
 				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)
 			}
 		}
 	}
-	for _, bufferServerConfig := range cfg.BufferServers {
-		if bufferServerConfig.Enabled {
-			go server.RunBufferServer(address, &bufferServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg)
-		}
-	}
-	for _, orderedMessageServerConfig := range cfg.OrderedMessageServers {
-		if orderedMessageServerConfig.Enabled {
-			go server.RunOrderedMessageServer(address, &orderedMessageServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(orderedMessageServerConfig.Type), "server_name": string(orderedMessageServerConfig.Label)}, reg))
+	for _, staticMessageServerConfig := range cfg.StaticMessageServers {
+		if staticMessageServerConfig.Enabled {
+			srv := server.NewStaticMessageServer(address, &staticMessageServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(staticMessageServerConfig.Type), "server_name": string(staticMessageServerConfig.Label)}, reg))
+			go srv.Run()
 		}
 	}
 

@@ -4,147 +4,120 @@ import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
 	"ChromehoundsStatusServer/logging"
-	"ChromehoundsStatusServer/logging/profiling"
-	"ChromehoundsStatusServer/pooling"
-	"ChromehoundsStatusServer/status"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-func RunStatusServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) {
-	statusResponsesHandled := promauto.With(reg).NewCounter(prometheus.CounterOpts{
-		Name: "status_responses_handled_total",
-		Help: "Total number of status responses handled",
-	})
-	wg.Add(1)
-	defer wg.Done()
-	// Pre-compute config flags to avoid pointer dereferencing in hot path
-	enablePerfMonitoring := loggingConfig.EnablePerformanceMonitoring
-	verboseLogging := loggingConfig.Verbose
-	label := serverConfig.Label
+type ServerTime struct {
+	Year   uint16
+	Month  uint8
+	Day    uint8
+	Hour   uint8
+	Minute uint8
+	Second uint8
+	Flag   byte
+}
 
-	conn, err := buildUDPListener(listenAddress, serverConfig.Port, serverConfig.Label, bufferSize)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
+type ServerState struct {
+	Header                     MessageHeader
+	GameSeason                 [4]byte
+	ProgramVersion             [4]byte
+	ServerLocalTime            ServerTime
+	ServerMaintenanceStartTime ServerTime
+	ServerMaintenanceEndTime   ServerTime
+}
 
-	readBuffer := pooling.ReadBufferPool.Get()
-	defer pooling.ReadBufferPool.Put(readBuffer)
+var gameSeasonValue = [4]byte{0x72, 0x00, 0x00, 0x00}
 
-	// Pre-allocate to avoid repeated allocations
-	var startTime time.Time
-	var processingTime time.Duration
+var programVersionValue = [4]byte{0x00, 0x00, 0x10, 0x00}
 
-	for {
-		select {
-		case <-ctx.Done():
-			if verboseLogging {
-				logging.LogShutdown(label)
-			}
-			return
-
-		default:
-			if enablePerfMonitoring {
-				startTime = time.Now()
-			}
-
-			n, clientAddr, err := readUDP(conn, &readBuffer, label)
-			if err != nil {
-				if !isTimeoutError(err) && enablePerfMonitoring {
-					profiling.RecordError()
-				}
-				continue
-			}
-
-			packet := readBuffer[:n]
-
-			// Validate status packet
-			if err := ValidateStatusPacket(packet, clientAddr, label); err != nil {
-				if verboseLogging {
-					logging.LogPacketValidationError(label, clientAddr, err.Error(), n)
-				}
-				if enablePerfMonitoring {
-					profiling.RecordError()
-				}
-				continue // Skip invalid packets
-			}
-
-			if enablePerfMonitoring {
-				processingTime := time.Since(startTime)
-				profiling.RecordPacketProcessed(n, processingTime)
-			}
-			if verboseLogging {
-				logging.LogPacketReceived(label, clientAddr, n, processingTime)
-			}
-
-			sendBuffer, err := createStatusResponse(&packet, label, enablePerfMonitoring)
-			if err != nil {
-				if verboseLogging {
-					logging.Warn.Println(err)
-				}
-				if enablePerfMonitoring {
-					profiling.RecordError()
-				}
-				continue
-			}
-
-			sendUDP(conn, clientAddr, sendBuffer, label, true)
-			if promConfig.Enabled {
-				statusResponsesHandled.Inc()
-			}
-		}
+func CreateServerTimeRaw(year uint16, month uint8, day uint8, hour uint8, minute uint8, second uint8, flag byte) ServerTime {
+	return ServerTime{
+		Year:   year,
+		Month:  month,
+		Day:    day,
+		Hour:   hour,
+		Minute: minute,
+		Second: second,
+		Flag:   flag,
 	}
 }
 
-func createStatusResponse(readBuffer *[]byte, label string, enablePerformanceMonitoring bool) (*[]byte, error) {
-	var startTime = time.Now()
+func createServerTime(time time.Time, flag byte) ServerTime {
+	return ServerTime{
 
-	start_offset := time.Hour * 12
-	end_offset := time.Hour * 24
-
-	var helloBuffer []byte = (*readBuffer)[0:32]
-	var helloStruct status.UserHelloMessage
-
-	if _, err := binary.Decode(helloBuffer, binary.LittleEndian, &helloStruct); err != nil {
-		logging.Warn.Printf("[%s] fallback to default xuid due to parsing error of hello header: %v\n", label, err)
-		helloStruct.Xuid = status.XuidValueHardCoded
+		Year:   uint16(time.Year()),
+		Month:  uint8(time.Month()),
+		Day:    uint8(time.Day()),
+		Hour:   uint8(time.Hour()),
+		Minute: uint8(time.Minute()),
+		Second: uint8(0x00),
+		Flag:   flag,
 	}
-
-	responseStruct := status.CreateStatus(helloStruct.Xuid, startTime, startTime.Add(start_offset), startTime.Add(end_offset))
-
-	// Use buffer pool for response
-	sendBuffer := pooling.StatusResponsePool.Get()
-	defer pooling.StatusResponsePool.Put(sendBuffer)
-
-	// Create a copy for return since we're putting the buffer back in the pool
-	responseBuffer := make([]byte, constants.StatusResponseSize)
-
-	if _, err := binary.Encode(responseBuffer, binary.LittleEndian, responseStruct); err != nil {
-		logging.Warn.Printf("[%s] Error populating sendbuffer: %s", label, err)
-		return nil, err
-	}
-
-	if enablePerformanceMonitoring {
-		processingTime := time.Since(startTime)
-		logging.LogPerformanceMetric(label, "status_response_creation", processingTime)
-	}
-
-	return &responseBuffer, nil
 }
 
-// ValidateStatusPacket validates incoming status server packets
-func ValidateStatusPacket(packet []byte, clientAddr *net.UDPAddr, label string) error {
+func CreateStatus(xuid [16]byte, order [8]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
+	return ServerState{
+		Header:                     CreateHeader(xuid, order),
+		GameSeason:                 gameSeasonValue,
+		ProgramVersion:             programVersionValue,
+		ServerLocalTime:            createServerTime(serverTime, 0x04),
+		ServerMaintenanceStartTime: createServerTime(maintenanceStart, 0x04),
+		ServerMaintenanceEndTime:   createServerTime(maintenanceEnd, 0x00),
+	}
+}
+
+func CreateStatusRaw(xuid [16]byte, order [8]byte, local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
+	return ServerState{
+		Header:                     CreateHeader(xuid, order),
+		GameSeason:                 gameSeasonValue,
+		ProgramVersion:             programVersionValue,
+		ServerLocalTime:            local,
+		ServerMaintenanceStartTime: maintStart,
+		ServerMaintenanceEndTime:   maintEnd,
+	}
+}
+
+type statusServer struct {
+	*messageServer
+}
+
+func NewStatusServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *statusServer {
+	s := &statusServer{}
+
+	s.messageServer = &messageServer{
+		listenAddress: listenAddress,
+		serverConfig:  &serverConfig,
+		bufferSize:    bufferSize,
+		loggingConfig: loggingConfig,
+		ctx:           ctx,
+		wg:            wg,
+		promConfig:    promConfig,
+		reg:           reg,
+
+		validatePacket: func(packet []byte, clientAddr *net.UDPAddr) error {
+			return validateStatusPacket(packet, clientAddr, serverConfig.Label)
+		},
+		buildPayload: func(hi UserHelloMessage) interface{} {
+			startTime := time.Now()
+			startOffset := time.Hour * 12
+			endOffset := time.Hour * 24
+			return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(startOffset), startTime.Add(endOffset))
+		},
+		responseSize: constants.StatusResponseSize,
+	}
+
+	return s
+}
+
+func validateStatusPacket(packet []byte, clientAddr *net.UDPAddr, label string) error {
 	packetSize := len(packet)
 
-	// Check minimum size for UserHelloMessage
 	if packetSize < constants.MinHelloMessageSize {
 		err := ValidationError{
 			Reason: fmt.Sprintf("packet too small (minimum: %d bytes)", constants.MinHelloMessageSize),
@@ -154,7 +127,6 @@ func ValidateStatusPacket(packet []byte, clientAddr *net.UDPAddr, label string) 
 		return err
 	}
 
-	// Check for reasonable maximum size to prevent abuse
 	if packetSize > constants.MaxBufferSize {
 		err := ValidationError{
 			Reason: fmt.Sprintf("packet too large (maximum: %d bytes)", constants.MaxBufferSize),
@@ -164,7 +136,6 @@ func ValidateStatusPacket(packet []byte, clientAddr *net.UDPAddr, label string) 
 		return err
 	}
 
-	// Validate Chromehounds header if packet is large enough
 	expectedHeader := ChromeHoundsHeader
 	if packet[0] != expectedHeader[0] || packet[1] != expectedHeader[1] {
 		err := ValidationError{

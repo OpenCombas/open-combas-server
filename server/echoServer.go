@@ -4,103 +4,59 @@ import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
 	"ChromehoundsStatusServer/logging"
-	"ChromehoundsStatusServer/logging/profiling"
-	"ChromehoundsStatusServer/pooling"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
 )
 
-func RunEchoingServer(listenAddress net.IP, serverConfig *config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) {
-	echoResponsesHandled := promauto.With(reg).NewCounter(prometheus.CounterOpts{
-		Name: "echo_responses_handled_total",
-		Help: "Total number of echo responses handled",
-	})
-	wg.Add(1)
-	defer wg.Done()
-	// Pre-compute config flags to avoid pointer dereferencing in hot path
-	enablePerfMonitoring := loggingConfig.EnablePerformanceMonitoring
-	verboseLogging := loggingConfig.Verbose
-	label := serverConfig.Label
-
-	conn, err := buildUDPListener(listenAddress, serverConfig.Port, label, bufferSize)
-	if err != nil {
-		return
-	}
-	defer conn.Close()
-
-	buffer := pooling.ReadBufferPool.Get()
-	defer pooling.ReadBufferPool.Put(buffer)
-
-	// Pre-allocate to avoid repeated allocations
-	var startTime time.Time
-	var processingTime time.Duration
-
-	for {
-		select {
-		case <-ctx.Done():
-			if verboseLogging {
-				logging.LogShutdown(label)
-			}
-			return
-
-		default:
-			if enablePerfMonitoring {
-				startTime = time.Now()
-			}
-
-			n, clientAddr, err := readUDP(conn, &buffer, label)
-			if err != nil {
-				if !isTimeoutError(err) && enablePerfMonitoring {
-					profiling.RecordError()
-				}
-				continue
-			}
-
-			packet := buffer[:n]
-
-			// Validate echo packet
-			if err := ValidateEchoPacket(packet, clientAddr, label); err != nil {
-				if verboseLogging {
-					logging.LogPacketValidationError(label, clientAddr, err.Error(), n)
-				}
-				if enablePerfMonitoring {
-					profiling.RecordError()
-				}
-				continue // Skip invalid packets
-			}
-
-			if enablePerfMonitoring {
-				processingTime := time.Since(startTime)
-				profiling.RecordPacketProcessed(n, processingTime)
-
-			}
-			if verboseLogging {
-				logging.LogPacketReceived(label, clientAddr, n, processingTime)
-
-			}
-
-			sendUDP(conn, clientAddr, &packet, label, false)
-			if promConfig.Enabled {
-				echoResponsesHandled.Inc()
-			}
-		}
-	}
+type echoServer struct {
+	*messageServer
 }
 
-// ValidateEchoPacket validates incoming echo server packets
-func ValidateEchoPacket(packet []byte, clientAddr *net.UDPAddr, label string) error {
+func NewEchoServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *echoServer {
+	s := &echoServer{}
+
+	s.messageServer = &messageServer{
+		listenAddress: listenAddress,
+		serverConfig:  &serverConfig,
+		bufferSize:    bufferSize,
+		loggingConfig: loggingConfig,
+		ctx:           ctx,
+		wg:            wg,
+		promConfig:    promConfig,
+		reg:           reg,
+
+		validatePacket: func(packet []byte, clientAddr *net.UDPAddr) error {
+			return validateEchoPacket(packet, clientAddr, serverConfig.Label)
+		},
+		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
+			hi := s.parseHelloMessage(readBuffer)
+			header := CreateHeader(hi.Xuid, hi.Order)
+
+			headerBuf := make([]byte, 32)
+			if _, err := binary.Encode(headerBuf, binary.LittleEndian, header); err != nil {
+				return nil, err
+			}
+
+			payload := (*readBuffer)[32:]
+			response := append(headerBuf, payload...)
+			return &response, nil
+		},
+	}
+
+	return s
+}
+
+func validateEchoPacket(packet []byte, clientAddr *net.UDPAddr, label string) error {
 	packetSize := len(packet)
 
-	// Basic size validation for echo packets
-	if packetSize == 0 {
+	if packetSize < constants.MinHelloMessageSize {
 		err := ValidationError{
-			Reason: "empty packet",
+			Reason: fmt.Sprintf("packet too small (minimum: %d bytes)", constants.MinHelloMessageSize),
 			Size:   packetSize,
 		}
 		logging.LogPacketValidationError(label, clientAddr, err.Reason, packetSize)

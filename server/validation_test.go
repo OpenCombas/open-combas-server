@@ -61,7 +61,7 @@ func TestValidateStatusPacket(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateStatusPacket(tt.packet, clientAddr, label)
+			err := validateStatusPacket(tt.packet, clientAddr, label)
 
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error but got none")
@@ -93,12 +93,12 @@ func TestValidateEchoPacket(t *testing.T) {
 	}{
 		{
 			name:        "Valid packet",
-			packet:      []byte("Hello World"),
+			packet:      make([]byte, constants.MinHelloMessageSize),
 			expectError: false,
 		},
 		{
-			name:        "Empty packet",
-			packet:      []byte{},
+			name:        "Packet too small",
+			packet:      make([]byte, constants.MinHelloMessageSize-1),
 			expectError: true,
 		},
 		{
@@ -115,7 +115,7 @@ func TestValidateEchoPacket(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateEchoPacket(tt.packet, clientAddr, label)
+			err := validateEchoPacket(tt.packet, clientAddr, label)
 
 			if tt.expectError && err == nil {
 				t.Errorf("Expected error but got none")
