@@ -10,11 +10,11 @@ import (
 
 func TestHeaderStruct(t *testing.T) {
 	byteTarget := []byte{
-		'C', 'H',
-		'0', '0', '0', '0', '9', '0', '0', '0', '0',
-		'4', 'E', 'A', '2', '5', '0', '6', '3', '0',
-		'0', '0', '0', '0', '0', '0', '1',
-		0x00, 0x00, 0x00, 0x00}
+		'C', 'H', 0x00, 0x00,
+		'0', '0', '0', '9', '0', '0', '0', '0',
+		'4', 'E', 'A', '2', '5', '0', '6', '3',
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Order
+		0x00, 0x00, 0x00, 0x00} // HeaderTerminator
 	strct := CreateHeader(XuidValueHardCoded, [8]byte{})
 
 	buffer := encodeToBuffer(strct, len(byteTarget), t)

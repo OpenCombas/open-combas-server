@@ -49,6 +49,15 @@ type ServerType string
 const (
 	Echoing        ServerType = "Echoing"
 	Status         ServerType = "Status"
+	World          ServerType = "World"
+	WorldArea      ServerType = "WorldArea"
+	WorldAreaInfo  ServerType = "WorldAreaInfo"
+	WorldMapDetail ServerType = "WorldMapDetail"
+	WorldNews      ServerType = "WorldNews"
+	SquadReg       ServerType = "SquadReg"
+	SquadLogin     ServerType = "SquadLogin"
+	SquadAck       ServerType = "SquadAck"
+	BattleReport   ServerType = "BattleReport"
 	Buffer         ServerType = "Buffer"
 	OrderedMessage ServerType = "OrderedMessage"
 )

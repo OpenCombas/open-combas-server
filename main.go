@@ -58,6 +58,33 @@ func main() {
 			case config.Status:
 				srv := server.NewStatusServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
+			case config.World:
+				srv := server.NewWorldServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.WorldArea:
+				srv := server.NewWorldAreaServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.WorldAreaInfo:
+				srv := server.NewWorldAreaInfoServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.WorldMapDetail:
+				srv := server.NewWorldMapDetailServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.WorldNews:
+				srv := server.NewWorldNewsServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.SquadReg:
+				srv := server.NewSquadRegServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.SquadLogin:
+				srv := server.NewSquadLoginServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.SquadAck:
+				srv := server.NewSquadAckServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.BattleReport:
+				srv := server.NewBattleReportServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
 			case config.Echoing:
 				srv := server.NewEchoServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
