@@ -3,6 +3,7 @@ package server
 import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
+	"ChromehoundsStatusServer/logging"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -36,14 +37,14 @@ import (
 
 // SquadEmblem is one emblem layer (12 bytes). Wire schema "S4, C3" (+1 stride pad).
 type SquadEmblem struct {
-	PaternID int16   // off 0  - Patern ID
-	Angle    int16   // off 2  - Angle
-	CoordX   int16   // off 4  - Coordinates X
-	CoordY   int16   // off 6  - Coordinates Y
-	Color    byte    // off 8  - Color
-	ScaleX   byte    // off 9  - Expansion&Reduction X
-	ScaleY   byte    // off 10 - Expansion&Reduction Y
-	_        byte    // off 11 - stride pad
+	PaternID int16 // off 0  - Patern ID
+	Angle    int16 // off 2  - Angle
+	CoordX   int16 // off 4  - Coordinates X
+	CoordY   int16 // off 6  - Coordinates Y
+	Color    byte  // off 8  - Color
+	ScaleX   byte  // off 9  - Expansion&Reduction X
+	ScaleY   byte  // off 10 - Expansion&Reduction Y
+	_        byte  // off 11 - stride pad
 }
 
 // SquadMember is one roster entry (48 bytes). Wire schema "X1, C37" (+3 stride bytes used as rank).
@@ -79,12 +80,12 @@ type SquadTeamInfo struct {
 	Color2      [3]byte  // off 67 - Team Color 2
 	Color3      [3]byte  // off 70 - Team Color 3
 	Color4      [3]byte  // off 73 - Team Color 4
-	Patern      byte     // off 76 - Team Patern
-	Profile     byte     // off 77 - Team Profile
-	PlayTime    byte     // off 78 - Main Play Time
-	Language    byte     // off 79 - Language
-	Strategy    byte     // off 80 - Strategy
-	RecruitType byte     // off 81 - Recruit Type
+	Patern      byte     // off 76 - Team Patern (emblem)
+	Stance      byte     // off 77 - parser "Team Profile"; = squad Stance (config setting)
+	Activity    byte     // off 78 - parser "Main Play Time"; = Activity Level (config setting)
+	Language    byte     // off 79 - Language (config setting)
+	Regions     byte     // off 80 - parser "Strategy"; = Connected Regions (config setting)
+	RoleFlags   byte     // off 81 - parser "Recruit Type"; = role bitmask (config setting)
 	_           [2]byte  // off 82 - pad (end of C20)
 	_           int32    // off 84
 	_           int32    // off 88 (end of I2)
@@ -92,10 +93,10 @@ type SquadTeamInfo struct {
 
 // SquadData is the full 1248-byte squad-login body.
 type SquadData struct {
-	Team    SquadTeamInfo    // off 0    (92)
-	Emblems [16]SquadEmblem  // off 92   (192)
-	_       [4]byte          // off 284  pad
-	Members [20]SquadMember  // off 288  (960)
+	Team    SquadTeamInfo   // off 0    (92)
+	Emblems [16]SquadEmblem // off 92   (192)
+	_       [4]byte         // off 284  pad
+	Members [20]SquadMember // off 288  (960)
 }
 
 // SquadLoginState is header(32) + body(1248) = constants.SquadLoginResponseSize (1280).
@@ -136,7 +137,12 @@ func teamIDIsEmpty(teamID string) bool {
 // xuidToInt64 converts the 16-char ASCII-hex XUID from the message header into its numeric value so it
 // can be matched against the client's own XUID in the roster.
 func xuidToInt64(xuid [16]byte) int64 {
-	v, err := strconv.ParseUint(strings.TrimSpace(string(xuid[:])), 16, 64)
+	return xuidHexToInt64(string(xuid[:]))
+}
+
+// xuidHexToInt64 parses a 16-char ASCII-hex XUID string into its numeric value.
+func xuidHexToInt64(s string) int64 {
+	v, err := strconv.ParseUint(strings.TrimSpace(s), 16, 64)
 	if err != nil {
 		return 0
 	}
@@ -179,12 +185,109 @@ func CreateSquadLoginState(hi UserHelloMessage, packet []byte) SquadLoginState {
 	return state
 }
 
-type squadLoginServer struct {
-	*messageServer
+// squadLoginStateFromSquad builds the reply from a persisted squad (Phase 2). The requester's header
+// xuid/order are echoed; the name, faction and roster come from Mongo. Team-level settings (language,
+// colours, stance) stay at defaults until the squad-config (1205) upload is persisted.
+func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState {
+	state := SquadLoginState{Header: CreateHeader(hi.Xuid, hi.Order)}
+	t := &state.Data.Team
+	t.Status = 0
+	copy(t.TeamName[:], squad.Name)
+	if len(squad.Faction) > 0 {
+		t.CountryCode = squad.Faction[0]
+	} else {
+		t.CountryCode = 'A'
+	}
+	t.TeamRank = squad.Rank
+	t.Language = 'J'
+	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
+
+	// Surface the settings uploaded via 1205/1245. The five Set-Squad-Profile rows map to consecutive
+	// TeamInfo bytes [77..81] (confirmed in-game: Activity[78] and Language[79] round-trip exactly, so by
+	// adjacency Stance[77], Regions[80], RoleFlags[81]). Values pass through verbatim - the client packs
+	// and unpacks the same enums - so no value translation is needed. Colours map RGB->RGB into Color1.
+	if cfg := squad.Settings; cfg != nil {
+		if len(cfg.Colors) == 3 {
+			t.Color1 = [3]byte{cfg.Colors[0], cfg.Colors[1], cfg.Colors[2]}
+		}
+		t.Stance = byte(cfg.Stance)
+		t.Activity = byte(cfg.Activity)
+		if cfg.Language != 0 {
+			t.Language = byte(cfg.Language)
+		}
+		t.Regions = byte(cfg.Regions)
+		t.RoleFlags = byte(cfg.RoleFlags)
+	}
+
+	n := len(squad.Members)
+	if n > len(state.Data.Members) {
+		n = len(state.Data.Members) // wire holds 20 members
+	}
+	t.MemberCount = byte(n)
+	for i := 0; i < n; i++ {
+		rec := squad.Members[i]
+		m := &state.Data.Members[i]
+		m.XUID = xuidHexToInt64(rec.XUID)
+		copy(m.UserID[:], rec.UserID)
+		copy(m.UserName[:], rec.Gamertag)
+		if rec.Leader {
+			m.LeaderFlg = 1
+		}
+		m.UserNumber = byte(rec.UserNumber)
+		m.Rank = rank3(rec.Rank)
+	}
+	return state
 }
 
-func NewSquadLoginServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *squadLoginServer {
-	s := &squadLoginServer{}
+// rank3 encodes a rank as the 3 big-endian bytes the client reads at member offset 45..47.
+func rank3(rank int32) [3]byte {
+	return [3]byte{byte(rank >> 16), byte(rank >> 8), byte(rank)}
+}
+
+// noTeamLoginState is the "no team" reply (status byte non-zero makes the client treat the record as
+// empty), used for the sign-in probe and for unknown team ids.
+func noTeamLoginState(hi UserHelloMessage) SquadLoginState {
+	state := SquadLoginState{Header: CreateHeader(hi.Xuid, hi.Order)}
+	state.Data.Team.Status = 1
+	return state
+}
+
+type squadLoginServer struct {
+	*messageServer
+	repo *SquadRepository // nil when Mongo is disabled -> static squad record
+}
+
+// buildLogin serves the squad-data reply from Mongo when wired: it looks the team up by id and returns
+// the persisted roster. An empty team id (the sign-in probe) or an unknown team yields "no team"; any
+// read error falls back to the static record so login never breaks.
+func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadLoginState {
+	if s.repo == nil {
+		return CreateSquadLoginState(hi, packet)
+	}
+
+	_, teamID := parseSquadLogin(packet)
+	if teamIDIsEmpty(teamID) {
+		return noTeamLoginState(hi)
+	}
+
+	readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+	defer cancel()
+	squad, err := s.repo.SquadByTeamID(readCtx, teamID)
+	if err != nil {
+		logging.Warn.Printf("[%s] mongo lookup failed, using static record: %v", s.serverConfig.Label, err)
+		return CreateSquadLoginState(hi, packet)
+	}
+	if squad == nil {
+		// Client holds a team id we don't know (e.g. a save from before the DB existed); report no team
+		// so it reconciles rather than serving a stale fabricated squad.
+		logging.Warn.Printf("[%s] unknown team id %q -> no team", s.serverConfig.Label, teamID)
+		return noTeamLoginState(hi)
+	}
+	return squadLoginStateFromSquad(hi, squad)
+}
+
+func NewSquadLoginServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *SquadRepository) *squadLoginServer {
+	s := &squadLoginServer{repo: repo}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -201,7 +304,7 @@ func NewSquadLoginServer(listenAddress net.IP, serverConfig config.ServerConfig,
 		},
 		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
 			hi := s.parseHelloMessage(readBuffer)
-			resp := CreateSquadLoginState(hi, *readBuffer)
+			resp := s.buildLogin(hi, *readBuffer)
 			buf := make([]byte, constants.SquadLoginResponseSize)
 			if _, err := binary.Encode(buf, binary.LittleEndian, resp); err != nil {
 				return nil, err

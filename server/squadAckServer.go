@@ -38,11 +38,16 @@ type SquadAckState struct {
 	_      byte // pad to the 2-byte response record
 }
 
-func CreateSquadAckState(xuid [16]byte, order [8]byte) SquadAckState {
+// squadAckState builds the 2-byte status reply with the given status byte.
+func squadAckState(xuid [16]byte, order [8]byte, status byte) SquadAckState {
 	return SquadAckState{
 		Header: CreateHeader(xuid, order),
-		Status: '1',
+		Status: status,
 	}
+}
+
+func CreateSquadAckState(xuid [16]byte, order [8]byte) SquadAckState {
+	return squadAckState(xuid, order, '1')
 }
 
 type squadAckServer struct {

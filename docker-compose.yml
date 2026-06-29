@@ -1,0 +1,69 @@
+name: opencombas
+
+# Unified stack: a single MongoDB shared as the source of truth, with both the combas UDP server and the
+# Xenia-WebServices HTTP API pointed at it. Run from this directory: `docker compose up --build`.
+#
+# Service hostnames resolve on the `opencombas` network, so both apps reach Mongo at mongo:27017.
+# Xenia's Mongoose URI has no database path, so it uses the "test" database; the combas server is told
+# the same via MONGO_DATABASE. Give both an explicit shared db later by adding a path to each URI.
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017" # exposed to the host for inspection (mongosh / Compass)
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - opencombas
+
+  combas-server:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      MONGO_URI: "mongodb://mongo:27017/"
+      MONGO_DATABASE: "test"
+    ports:
+      # All combas UDP services (see config.toml). Published as a range so newly-added ports work too.
+      - "1201-1258:1201-1258/udp"
+      - "9090:9090" # Prometheus metrics
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - opencombas
+
+  webservices:
+    # Xenia-WebServices is vendored as a git submodule under external/. It ships a lowercase `dockerfile`;
+    # name it explicitly so it builds on case-sensitive filesystems (Docker otherwise looks for `Dockerfile`).
+    build:
+      context: ./external/Xenia-WebServices
+      dockerfile: dockerfile
+    restart: unless-stopped
+    environment:
+      API_PORT: "36000"
+      MONGO_URI: "mongodb://mongo:27017/"
+      SWAGGER_API: "true"
+      nginx: "false"
+    ports:
+      - "36000:36000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - opencombas
+
+volumes:
+  mongo-data:
+
+networks:
+  opencombas:
+    driver: bridge

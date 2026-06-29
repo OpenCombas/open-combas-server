@@ -1,0 +1,3 @@
+[submodule "external/Xenia-WebServices"]
+	path = external/Xenia-WebServices
+	url = https://github.com/AdrianCassar/Xenia-WebServices.git

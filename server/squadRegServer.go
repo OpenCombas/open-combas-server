@@ -3,9 +3,12 @@ package server
 import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
+	"ChromehoundsStatusServer/logging"
+	"bytes"
 	"context"
 	"encoding/binary"
 	"net"
+	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -41,26 +44,88 @@ type SquadRegState struct {
 	Record SquadRegRecord
 }
 
-func CreateSquadRegState(xuid [16]byte, order [8]byte) SquadRegState {
-	rec := SquadRegRecord{Status: '1', Sep1: ',', Sep2: ','}
-	// Assign a well-formed team id (season 0001, team #1) and user id. These are placeholders until
-	// persistent registration exists; the format must match "TM%04d%012I64d" / "US..." or the
-	// login-time team-data validator (sub_823BB678) clears it.
-	copy(rec.TeamID[:], "TM0001000000000001")
-	copy(rec.UserID[:], "US0001000000000001")
+// squadRegState builds the 44-byte registration reply. status '1' = success, '2' = "Unique Error"
+// (name taken), other = "Unknown Error"; the team/user ids are ignored by the client on the error paths.
+// The id format must match "TM%04d%012I64d" / "US..." or the login-time team-data validator
+// (sub_823BB678) clears it.
+func squadRegState(xuid [16]byte, order [8]byte, status byte, teamID, userID string) SquadRegState {
+	rec := SquadRegRecord{Status: status, Sep1: ',', Sep2: ','}
+	copy(rec.TeamID[:], teamID)
+	copy(rec.UserID[:], userID)
+	return SquadRegState{Header: CreateHeader(xuid, order), Record: rec}
+}
 
-	return SquadRegState{
-		Header: CreateHeader(xuid, order),
-		Record: rec,
+// CreateSquadRegState is the static fallback (Mongo disabled): always succeeds with fixed ids.
+func CreateSquadRegState(xuid [16]byte, order [8]byte) SquadRegState {
+	return squadRegState(xuid, order, '1', "TM0001000000000001", "US0001000000000001")
+}
+
+// parseSquadReg extracts the gamertag, squad name and faction from a registration body of
+// "<gamertag>,<userid>,<squadname>,<faction>,<n>,<n>".
+func parseSquadReg(packet []byte) (gamertag, name, faction string) {
+	if len(packet) <= constants.MinHelloMessageSize {
+		return "", "", ""
 	}
+	body := packet[constants.MinHelloMessageSize:]
+	if i := bytes.IndexByte(body, 0); i >= 0 {
+		body = body[:i]
+	}
+	parts := strings.Split(string(body), ",")
+	if len(parts) >= 4 {
+		gamertag = strings.TrimSpace(parts[0])
+		name = strings.TrimSpace(parts[2])
+		faction = strings.TrimSpace(parts[3])
+	}
+	return
 }
 
 type squadRegServer struct {
 	*messageServer
+	repo *SquadRepository // nil when Mongo is disabled -> static fixed-id reply
 }
 
-func NewSquadRegServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *squadRegServer {
-	s := &squadRegServer{}
+// buildReg persists the new squad when a repository is wired, returning the assigned ids; on any error
+// (or when Mongo is disabled) it falls back to the static fixed-id success reply so creation never fails
+// outright.
+func (s *squadRegServer) buildReg(hi UserHelloMessage, packet []byte) SquadRegState {
+	if s.repo == nil {
+		return CreateSquadRegState(hi.Xuid, hi.Order)
+	}
+
+	gamertag, name, faction := parseSquadReg(packet)
+	if name == "" {
+		logging.Warn.Printf("[%s] could not parse squad name, using static reg", s.serverConfig.Label)
+		return CreateSquadRegState(hi.Xuid, hi.Order)
+	}
+
+	readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+	defer cancel()
+
+	if existing, err := s.repo.SquadByName(readCtx, name); err != nil {
+		logging.Warn.Printf("[%s] mongo lookup failed, using static reg: %v", s.serverConfig.Label, err)
+		return CreateSquadRegState(hi.Xuid, hi.Order)
+	} else if existing != nil {
+		return squadRegState(hi.Xuid, hi.Order, '2', "", "") // Unique Error: name already taken
+	}
+
+	profile, err := s.repo.EnsureProfile(readCtx, string(hi.Xuid[:]), gamertag)
+	if err != nil {
+		logging.Warn.Printf("[%s] profile ensure failed, using static reg: %v", s.serverConfig.Label, err)
+		return CreateSquadRegState(hi.Xuid, hi.Order)
+	}
+
+	squad, err := s.repo.CreateSquad(readCtx, name, faction, profile)
+	if err != nil {
+		logging.Warn.Printf("[%s] squad create failed, using static reg: %v", s.serverConfig.Label, err)
+		return CreateSquadRegState(hi.Xuid, hi.Order)
+	}
+
+	logging.Info.Printf("[%s] created squad %q (%s) faction %q for %s", s.serverConfig.Label, name, squad.TeamID, faction, gamertag)
+	return squadRegState(hi.Xuid, hi.Order, '1', squad.TeamID, profile.UserID)
+}
+
+func NewSquadRegServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *SquadRepository) *squadRegServer {
+	s := &squadRegServer{repo: repo}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -77,7 +142,7 @@ func NewSquadRegServer(listenAddress net.IP, serverConfig config.ServerConfig, b
 		},
 		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
 			hi := s.parseHelloMessage(readBuffer)
-			resp := CreateSquadRegState(hi.Xuid, hi.Order)
+			resp := s.buildReg(hi, *readBuffer)
 			buf := make([]byte, constants.SquadRegResponseSize)
 			if _, err := binary.Encode(buf, binary.LittleEndian, resp); err != nil {
 				return nil, err

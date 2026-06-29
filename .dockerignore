@@ -1,0 +1,22 @@
+# Build artifacts
+ChromehoundsStatusServer
+combas-server
+*.test
+
+# VCS / editor / docs
+.git
+.gitignore
+.vscode
+*.md
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Local data / logs
+*.log
+data
+
+# Vendored submodule (built by its own compose service, not part of the Go image context)
+external

@@ -3,6 +3,7 @@ package server
 import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
+	"ChromehoundsStatusServer/logging"
 	"bytes"
 	"context"
 	"encoding/binary"
@@ -10,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -52,29 +52,24 @@ type AreaInfoState struct {
 	Maps       [6]AreaMapRecord
 }
 
-func CreateAreaInfoState(xuid [16]byte, order [8]byte, areaID byte) AreaInfoState {
-	var seasonID [19]byte
-	copy(seasonID[:], "0001")
-
-	world := WorldHeader{
-		Status:   0,
-		SeasonID: seasonID,
-		DataTime: int32(time.Now().Unix()),
-	}
-
-	// Per-area battlefields come from the shared static world model (worldData.go), so the count
-	// (3 or 4), the per-nation occupation levels and the controlling flag stay consistent with the
-	// war-map (area-map / code 196) server.
-	maps, mapCount := areaBattlefields(areaID)
-
+// newAreaInfoState assembles the per-area battlefield reply from a fixed set of records (static model
+// or Mongo-backed).
+func newAreaInfoState(xuid [16]byte, order [8]byte, areaID byte, maps [6]AreaMapRecord, mapCount byte) AreaInfoState {
 	return AreaInfoState{
 		Header:     CreateHeader(xuid, order),
-		World:      world,
+		World:      worldHeaderNow(),
 		AreaID:     areaID,
 		MapCount:   mapCount,
 		BattleFlag: 0,
 		Maps:       maps,
 	}
+}
+
+func CreateAreaInfoState(xuid [16]byte, order [8]byte, areaID byte) AreaInfoState {
+	// Static model (worldData.go): keeps the count (3 or 4), per-nation occupation and controlling flag
+	// consistent with the war-map (area-map / code 196) server.
+	maps, mapCount := areaBattlefields(areaID)
+	return newAreaInfoState(xuid, order, areaID, maps, mapCount)
 }
 
 // parseAreaID extracts <id> from a request body of "<gamertag>,<id>" (e.g. "ibac,11").
@@ -96,10 +91,27 @@ func parseAreaID(packet []byte) byte {
 
 type worldAreaInfoServer struct {
 	*messageServer
+	repo *WorldRepository // nil when Mongo is disabled -> static model
 }
 
-func NewWorldAreaInfoServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *worldAreaInfoServer {
-	s := &worldAreaInfoServer{}
+// buildAreaInfo serves one area's battlefields from Mongo when wired, falling back to the static model
+// on any read error.
+func (s *worldAreaInfoServer) buildAreaInfo(hi UserHelloMessage, areaID byte) AreaInfoState {
+	if s.repo != nil {
+		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+		defer cancel()
+		if bfs, err := s.repo.BattlefieldsByArea(readCtx, areaID); err != nil {
+			logging.Warn.Printf("[%s] mongo read failed, using static model: %v", s.serverConfig.Label, err)
+		} else if len(bfs) > 0 {
+			maps, mapCount := areaMapRecordsFrom(bfs)
+			return newAreaInfoState(hi.Xuid, hi.Order, areaID, maps, mapCount)
+		}
+	}
+	return CreateAreaInfoState(hi.Xuid, hi.Order, areaID)
+}
+
+func NewWorldAreaInfoServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *WorldRepository) *worldAreaInfoServer {
+	s := &worldAreaInfoServer{repo: repo}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -118,7 +130,7 @@ func NewWorldAreaInfoServer(listenAddress net.IP, serverConfig config.ServerConf
 		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
 			hi := s.parseHelloMessage(readBuffer)
 			areaID := parseAreaID(*readBuffer)
-			resp := CreateAreaInfoState(hi.Xuid, hi.Order, areaID)
+			resp := s.buildAreaInfo(hi, areaID)
 			buf := make([]byte, constants.AreaInfoResponseSize)
 			if _, err := binary.Encode(buf, binary.LittleEndian, resp); err != nil {
 				return nil, err

@@ -68,17 +68,22 @@ type WorldState struct {
 	Tail    [332]byte // ranking / election / donation sections (TBD)
 }
 
-func CreateWorldState(xuid [16]byte, order [8]byte) WorldState {
+// worldHeaderNow is the common 28-byte body header (season + reset flag + timestamp) shared by the
+// world / area / area-info responses.
+func worldHeaderNow() WorldHeader {
 	var seasonID [19]byte
 	copy(seasonID[:], "0001") // tunable; the client prints this as "Season ID: %s"
-
-	world := WorldHeader{
+	return WorldHeader{
 		Status:          0,
 		SeasonID:        seasonID,
 		ServerResetFlag: 0,
 		DataTime:        int32(time.Now().Unix()),
 	}
+}
 
+// defaultNations is the static faction model. It is both the fallback when Mongo is unavailable and the
+// seed source for the `nations` collection (see seedNations).
+func defaultNations() [3]NationData {
 	// Plausible placeholder values so the in-game World Situation screen shows data.
 	mkNation := func(code byte, presidentID byte, pop, soldiers, players int32) NationData {
 		return NationData{
@@ -99,26 +104,54 @@ func CreateWorldState(xuid [16]byte, order [8]byte) WorldState {
 			DeadFlag:          0,
 		}
 	}
-
-	return WorldState{
-		Header: CreateHeader(xuid, order),
-		World:  world,
-		Nations: [3]NationData{
-			// presidentID is a placeholder index per nation (Tarakia's #1 = "Glen Conrad");
-			// the correct per-nation IDs are tunable.
-			mkNation('A', 1, 1_000_000, 5_000, 120), // Tarakia
-			mkNation('B', 2, 900_000, 4_500, 100),   // Morskoj
-			mkNation('C', 3, 1_100_000, 5_500, 140),  // Sal Kar
-		},
+	return [3]NationData{
+		// presidentID is a placeholder index per nation (Tarakia's #1 = "Glen Conrad");
+		// the correct per-nation IDs are tunable.
+		mkNation('A', 1, 1_000_000, 5_000, 120), // Tarakia
+		mkNation('B', 2, 900_000, 4_500, 100),   // Morskoj
+		mkNation('C', 3, 1_100_000, 5_500, 140), // Sal Kar
 	}
+}
+
+// newWorldState assembles the reply from a fixed set of nations (static fallback or Mongo-backed).
+func newWorldState(xuid [16]byte, order [8]byte, nations [3]NationData) WorldState {
+	return WorldState{
+		Header:  CreateHeader(xuid, order),
+		World:   worldHeaderNow(),
+		Nations: nations,
+	}
+}
+
+func CreateWorldState(xuid [16]byte, order [8]byte) WorldState {
+	return newWorldState(xuid, order, defaultNations())
 }
 
 type worldServer struct {
 	*messageServer
+	repo *WorldRepository // nil when Mongo is disabled -> static model
 }
 
-func NewWorldServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *worldServer {
-	s := &worldServer{}
+// buildWorld serves the World Situation reply from Mongo when a repository is wired, falling back to the
+// static model on any read error so a Mongo hiccup never drops the response.
+func (s *worldServer) buildWorld(hi UserHelloMessage) WorldState {
+	if s.repo != nil {
+		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+		defer cancel()
+		if recs, err := s.repo.Nations(readCtx); err != nil {
+			logging.Warn.Printf("[%s] mongo read failed, using static model: %v", s.serverConfig.Label, err)
+		} else if len(recs) == 3 {
+			var nations [3]NationData
+			for i, r := range recs {
+				nations[i] = r.toNationData()
+			}
+			return newWorldState(hi.Xuid, hi.Order, nations)
+		}
+	}
+	return CreateWorldState(hi.Xuid, hi.Order)
+}
+
+func NewWorldServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *WorldRepository) *worldServer {
+	s := &worldServer{repo: repo}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -134,7 +167,7 @@ func NewWorldServer(listenAddress net.IP, serverConfig config.ServerConfig, buff
 			return validateWorldPacket(packet, clientAddr, serverConfig.Label)
 		},
 		buildPayload: func(hi UserHelloMessage) interface{} {
-			return CreateWorldState(hi.Xuid, hi.Order)
+			return s.buildWorld(hi)
 		},
 		responseSize: constants.WorldResponseSize,
 	}
