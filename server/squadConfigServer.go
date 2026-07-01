@@ -24,11 +24,11 @@ import (
 //   [35]    section flags: bit0 = main settings present, bit1 = colours/passcode present (the client
 //           only sends the section it changed)
 //   [36]    reserved config byte
-//   [37..39] team colours      } colours/passcode section (present when flags&2)
-//   [40..48] passcode (string) }
-//   [49]    reserved (colours/passcode section)
+//   [37..48] four RGB team colours (Color1..4)  } colours section (present when flags&2)
+//   [49]    palette/pattern selector (4 = full 4-colour, 1 = single colour) }
 //   [50] stance, [51] activity, [52] language, [53] regions, [54] role bitmask (main section, flags&1)
 //   [56..59] reserved int
+// (There is no passcode in this message - the create blob's "nsn_ZP" was Color2/3 byte values.)
 //
 // We section-merge into the squad doc so editing one section never wipes the other, and answer '1' if
 // the team exists, '3' otherwise. With no repository (Mongo off) this degrades to a plain '1' ack.
@@ -59,13 +59,9 @@ func parseSquadConfig(packet []byte) (teamID string, flags byte, settings SquadS
 	settings.Regions = int32(blob[19])
 	settings.RoleFlags = int32(blob[20])
 
-	// colours/passcode section (flags&2): blob[3..5] colours, blob[6..14] passcode
-	settings.Colors = append([]byte(nil), blob[3:6]...)
-	pc := blob[6:15]
-	if i := bytes.IndexByte(pc, 0); i >= 0 {
-		pc = pc[:i]
-	}
-	settings.Passcode = string(pc)
+	// colours section (flags&2): blob[3..14] = 4 RGB colours (body[37..48]), blob[15] = palette selector
+	settings.Colors = append([]byte(nil), blob[3:15]...)
+	settings.Patern = int32(blob[15])
 
 	return teamID, flags, settings, true
 }

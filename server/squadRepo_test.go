@@ -48,7 +48,8 @@ func TestSquadLoginStateFromSquad(t *testing.T) {
 			Language:  0x43,
 			Regions:   0x02,
 			RoleFlags: 0x3f,
-			Colors:    []byte{0x10, 0x20, 0x30},
+			Colors:    []byte{0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0},
+			Patern:    0x04,
 		},
 	}
 
@@ -56,9 +57,13 @@ func TestSquadLoginStateFromSquad(t *testing.T) {
 	buf := encodeToBuffer(state, constants.SquadLoginResponseSize, t)
 	body := buf[constants.MinHelloMessageSize:]
 
-	// The five Set-Squad-Profile settings surface at consecutive TeamInfo bytes [77..81]; colours at Color1.
-	if c := body[64:67]; c[0] != 0x10 || c[1] != 0x20 || c[2] != 0x30 {
-		t.Errorf("Color1 = % x, want 10 20 30", c)
+	// The five Set-Squad-Profile settings surface at consecutive TeamInfo bytes [77..81]; the 4-colour
+	// palette at Color1..4 [64..75] and the palette selector at Patern[76].
+	if c := body[64:76]; c[0] != 0x10 || c[3] != 0x40 || c[6] != 0x70 || c[9] != 0xa0 {
+		t.Errorf("palette Color1..4 = % x", c)
+	}
+	if body[76] != 0x04 {
+		t.Errorf("Patern = %#x, want 0x04", body[76])
 	}
 	if body[77] != 0x04 {
 		t.Errorf("stance[77] = %#x, want 0x04", body[77])

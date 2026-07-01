@@ -61,8 +61,8 @@ type SquadSettings struct {
 	Language  int32  `bson:"language"`  // blob[52] - "Language"
 	Regions   int32  `bson:"regions"`   // blob[53] - "Connected Regions" (likely a bitmask)
 	RoleFlags int32  `bson:"roleFlags"` // blob[54] - 6-bit role bitmask (0x3f = all six on)
-	Colors    []byte `bson:"colors,omitempty"`   // blob[37..39]
-	Passcode  string `bson:"passcode,omitempty"` // blob[40..48]
+	Colors    []byte `bson:"colors,omitempty"` // blob[37..48] - 4 RGB team colours (12 bytes)
+	Patern    int32  `bson:"patern"`           // blob[49] - palette/pattern selector (4 in create, 1 single-colour)
 }
 
 // Squad is a persistent guild.
@@ -73,6 +73,7 @@ type Squad struct {
 	Rank     int32               `bson:"rank"`
 	Members  []SquadMemberRecord `bson:"members"`
 	Settings *SquadSettings      `bson:"settings,omitempty"`
+	Emblems  []byte              `bson:"emblems,omitempty"` // 16 emblem layers (192 bytes, wire "S4,C3" format)
 }
 
 // UpdateSquadSettings applies an uploaded config to a squad, honouring the section flags: bit0 sets the
@@ -90,7 +91,7 @@ func (r *SquadRepository) UpdateSquadSettings(ctx context.Context, teamID string
 	}
 	if flags&2 != 0 {
 		set["settings.colors"] = s.Colors
-		set["settings.passcode"] = s.Passcode
+		set["settings.patern"] = s.Patern
 	}
 	if len(set) == 0 {
 		// Nothing flagged; still report existence so the client gets "complete".
@@ -171,6 +172,102 @@ func (r *SquadRepository) EnsureProfile(ctx context.Context, xuid, gamertag stri
 		return CombasProfile{}, err
 	}
 	return p, nil
+}
+
+// RemoveMember withdraws a member (by user id) from a squad, returning the status byte the client
+// expects (parser sub_823BDB88): '1' Delete Complete, '2' Leader Can't Delete, '3' Target Data None.
+// A leader may only leave when they are the last member (the squad then disbands); a leader abandoning
+// remaining members is rejected with '2'.
+func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, userID string) (byte, error) {
+	sq, err := r.SquadByTeamID(ctx, teamID)
+	if err != nil {
+		return 0, err
+	}
+	if sq == nil {
+		return '3', nil // Target Data None
+	}
+
+	idx := -1
+	for i, m := range sq.Members {
+		if m.UserID == userID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return '3', nil
+	}
+	if sq.Members[idx].Leader && len(sq.Members) > 1 {
+		return '2', nil // Leader Can't Delete (would orphan the remaining members)
+	}
+
+	memberXUID := sq.Members[idx].XUID
+	if len(sq.Members) <= 1 {
+		// Last member leaving -> disband the squad entirely.
+		if _, err := r.squads.DeleteOne(ctx, bson.M{"teamId": teamID}); err != nil {
+			return 0, err
+		}
+	} else {
+		if _, err := r.squads.UpdateOne(ctx,
+			bson.M{"teamId": teamID},
+			bson.M{"$pull": bson.M{"members": bson.M{"userId": userID}}},
+		); err != nil {
+			return 0, err
+		}
+	}
+
+	// Unlink the departing member's persistent profile from the team.
+	if memberXUID != "" {
+		_, _ = r.profiles.UpdateOne(ctx, bson.M{"xuid": memberXUID}, bson.M{"$set": bson.M{"teamId": ""}})
+	}
+	return '1', nil // Delete Complete
+}
+
+// SetMemberNumber assigns a member's "hound number" (0..99, unique within the squad), returning the
+// status byte the client expects (parser sub_823BDA28): '1' Member Config Complete, '2' Already Been
+// Used By Other Users, '3' Target Member Not Exist.
+func (r *SquadRepository) SetMemberNumber(ctx context.Context, teamID, userID string, number byte) (byte, error) {
+	sq, err := r.SquadByTeamID(ctx, teamID)
+	if err != nil {
+		return 0, err
+	}
+	if sq == nil {
+		return '3', nil // Target Member Not Exist
+	}
+
+	memberFound := false
+	for _, m := range sq.Members {
+		if m.UserID == userID {
+			memberFound = true
+			continue
+		}
+		if m.UserNumber == int32(number) {
+			return '2', nil // Already Been Used By Other Users
+		}
+	}
+	if !memberFound {
+		return '3', nil
+	}
+
+	if _, err := r.squads.UpdateOne(ctx,
+		bson.M{"teamId": teamID, "members.userId": userID},
+		bson.M{"$set": bson.M{"members.$.userNumber": int32(number)}},
+	); err != nil {
+		return 0, err
+	}
+	return '1', nil // Member Config Complete
+}
+
+// SetEmblems stores the raw 192-byte emblem blob on a squad, returning whether the squad existed.
+func (r *SquadRepository) SetEmblems(ctx context.Context, teamID string, emblems []byte) (bool, error) {
+	res, err := r.squads.UpdateOne(ctx,
+		bson.M{"teamId": teamID},
+		bson.M{"$set": bson.M{"emblems": emblems}},
+	)
+	if err != nil {
+		return false, err
+	}
+	return res.MatchedCount > 0, nil
 }
 
 // SquadByTeamID returns the squad with the given team id, or (nil, nil) if none exists.

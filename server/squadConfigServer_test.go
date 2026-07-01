@@ -50,11 +50,12 @@ func TestParseSquadConfigCreate(t *testing.T) {
 	if s.Stance != 1 || s.Activity != 1 || s.Language != 0x31 || s.Regions != 1 || s.RoleFlags != 0x3f {
 		t.Errorf("main settings = %+v", s)
 	}
-	if !bytes.Equal(s.Colors, []byte{0xa0, 0xa0, 0xa0}) {
+	// Colours are the full 4-RGB palette; the create blob carried four distinct colours.
+	if !bytes.Equal(s.Colors, []byte{0xa0, 0xa0, 0xa0, 0x6e, 0x73, 0x6e, 0x5f, 0x5a, 0x50, 0x00, 0x00, 0x00}) {
 		t.Errorf("colors = % x", s.Colors)
 	}
-	if s.Passcode != "nsn_ZP" {
-		t.Errorf("passcode = %q, want nsn_ZP", s.Passcode)
+	if s.Patern != 0x04 {
+		t.Errorf("patern = %#x, want 0x04", s.Patern)
 	}
 }
 
@@ -101,11 +102,12 @@ func TestSquadSettingsMergeLive(t *testing.T) {
 	p, _ := repo.EnsureProfile(ctx, "000900001AC5EE91", "ibac")
 	squad, _ := repo.CreateSquad(ctx, "OpenCombas", "B", p)
 
-	// 1) colours/passcode section.
-	if ok, err := repo.UpdateSquadSettings(ctx, squad.TeamID, 0x02, SquadSettings{Colors: []byte{1, 2, 3}, Passcode: "secret"}); err != nil || !ok {
+	palette := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	// 1) colours section.
+	if ok, err := repo.UpdateSquadSettings(ctx, squad.TeamID, 0x02, SquadSettings{Colors: palette, Patern: 4}); err != nil || !ok {
 		t.Fatalf("update colours: ok=%v err=%v", ok, err)
 	}
-	// 2) main section only -> must NOT clear the passcode.
+	// 2) main section only -> must NOT clear the palette.
 	if ok, err := repo.UpdateSquadSettings(ctx, squad.TeamID, 0x01, SquadSettings{Stance: 4, RoleFlags: 0x20}); err != nil || !ok {
 		t.Fatalf("update main: ok=%v err=%v", ok, err)
 	}
@@ -114,8 +116,8 @@ func TestSquadSettingsMergeLive(t *testing.T) {
 	if got == nil || got.Settings == nil {
 		t.Fatal("settings not persisted")
 	}
-	if got.Settings.Passcode != "secret" {
-		t.Errorf("passcode = %q, want secret (main-only edit clobbered it)", got.Settings.Passcode)
+	if len(got.Settings.Colors) != 12 || got.Settings.Colors[0] != 1 || got.Settings.Patern != 4 {
+		t.Errorf("palette clobbered by main-only edit: %+v", got.Settings)
 	}
 	if got.Settings.Stance != 4 || got.Settings.RoleFlags != 0x20 {
 		t.Errorf("main settings not applied: %+v", got.Settings)

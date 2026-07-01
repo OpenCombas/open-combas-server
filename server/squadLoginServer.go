@@ -207,9 +207,17 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 	// adjacency Stance[77], Regions[80], RoleFlags[81]). Values pass through verbatim - the client packs
 	// and unpacks the same enums - so no value translation is needed. Colours map RGB->RGB into Color1.
 	if cfg := squad.Settings; cfg != nil {
-		if len(cfg.Colors) == 3 {
+		// Colours are the full 4-RGB palette (12 bytes) plus a palette selector. Tolerate the legacy
+		// 3-byte single-colour form so older squad docs still render Color1.
+		if len(cfg.Colors) >= 3 {
 			t.Color1 = [3]byte{cfg.Colors[0], cfg.Colors[1], cfg.Colors[2]}
 		}
+		if len(cfg.Colors) >= 12 {
+			t.Color2 = [3]byte{cfg.Colors[3], cfg.Colors[4], cfg.Colors[5]}
+			t.Color3 = [3]byte{cfg.Colors[6], cfg.Colors[7], cfg.Colors[8]}
+			t.Color4 = [3]byte{cfg.Colors[9], cfg.Colors[10], cfg.Colors[11]}
+		}
+		t.Patern = byte(cfg.Patern)
 		t.Stance = byte(cfg.Stance)
 		t.Activity = byte(cfg.Activity)
 		if cfg.Language != 0 {
@@ -217,6 +225,12 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 		}
 		t.Regions = byte(cfg.Regions)
 		t.RoleFlags = byte(cfg.RoleFlags)
+	}
+
+	// Surface the squad emblem (uploaded via 1206/1246) -- the 192-byte blob is already in the wire
+	// "S4,C3" layout, so decoding it straight into the 16-layer emblem array round-trips it.
+	if len(squad.Emblems) == squadEmblemBlobSize {
+		_, _ = binary.Decode(squad.Emblems, binary.LittleEndian, &state.Data.Emblems)
 	}
 
 	n := len(squad.Members)

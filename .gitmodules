@@ -1,3 +1,6 @@
 [submodule "external/Xenia-WebServices"]
 	path = external/Xenia-WebServices
 	url = https://github.com/AdrianCassar/Xenia-WebServices.git
+[submodule "external/xenia-gns-relay"]
+	path = external/xenia-gns-relay
+	url = https://github.com/opencombas/xenia-gns-relay

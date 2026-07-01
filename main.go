@@ -133,6 +133,15 @@ func main() {
 			case config.SquadConfig:
 				srv := server.NewSquadConfigServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo)
 				go srv.Run()
+			case config.SquadWithdraw:
+				srv := server.NewSquadWithdrawServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo)
+				go srv.Run()
+			case config.SquadMemberNum:
+				srv := server.NewSquadMemberNumberServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo)
+				go srv.Run()
+			case config.SquadEmblem:
+				srv := server.NewSquadEmblemServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo)
+				go srv.Run()
 			case config.BattleReport:
 				srv := server.NewBattleReportServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
