@@ -15,6 +15,9 @@ services:
       - mongo-data:/data/db
     ports:
       - "27017:27017" # exposed to the host for inspection (mongosh / Compass)
+    environment: 
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -31,8 +34,8 @@ services:
     environment:
       MONGO_URI: "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/"
       MONGO_DATABASE: "test"
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - ./config.toml:/app/config.toml
     ports:
       # All combas UDP services (see config.toml). Published as a range so newly-added ports work too.
       - "1201-1300:1201-1300/udp"
@@ -41,7 +44,8 @@ services:
       mongo:
         condition: service_healthy
     networks:
-      - opencombas
+      opencombas:
+        ipv4_address: 172.20.0.150
 
   webservices:
     # Xenia-WebServices is vendored as a git submodule under external/. It ships a lowercase `dockerfile`;
@@ -55,14 +59,14 @@ services:
       MONGO_URI: "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/"
       SWAGGER_API: "true"
       nginx: "false"
+      xstorage: "true"
     ports:
       - "36000:36000"
     depends_on:
       mongo:
         condition: service_healthy
     networks:
-      opencombas:
-        ipv4_address: 172.20.0.5
+    -  opencombas
 
   gns-relay:
     build:
@@ -93,7 +97,7 @@ services:
     restart: unless-stopped
     networks:
       - opencombas
-    command: ["--server-ip", "${COMBAS_IP}", "--signaling-url", "ws://gns-relay:8080/relay", "--loopback", "combas-server"]
+    command: ["--server-ip", "${COMBAS_IP}", "--signaling-url", "ws://gns-relay:8080/relay", "--loopback", "172.20.0.150"]
 
 
 volumes:

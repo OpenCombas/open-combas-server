@@ -31,6 +31,8 @@ services:
     environment:
       MONGO_URI: "mongodb://mongo:27017/"
       MONGO_DATABASE: "test"
+    volumes:
+      - ./config.toml:/app/config.toml
     ports:
       # All combas UDP services (see config.toml). Published as a range so newly-added ports work too.
       - "1201-1300:1201-1300/udp"
@@ -39,7 +41,8 @@ services:
       mongo:
         condition: service_healthy
     networks:
-      - opencombas
+      opencombas:
+        ipv4_address: 172.20.0.150
 
   webservices:
     # Xenia-WebServices is vendored as a git submodule under external/. It ships a lowercase `dockerfile`;
@@ -53,6 +56,7 @@ services:
       MONGO_URI: "mongodb://mongo:27017/"
       SWAGGER_API: "true"
       nginx: "false"
+      xstorage: "true"
     ports:
       - "36000:36000"
     depends_on:
