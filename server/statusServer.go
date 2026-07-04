@@ -61,14 +61,14 @@ func createServerTime(time time.Time, flag byte) ServerTime {
 	}
 }
 
-func CreateStatus(xuid [16]byte, order [8]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time) ServerState {
+func CreateStatus(xuid [16]byte, order [8]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time, flag byte) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid, order),
 		GameSeason:                 gameSeasonValue,
 		ProgramVersion:             programVersionValue,
 		ServerLocalTime:            createServerTime(serverTime, 0x04),
 		ServerMaintenanceStartTime: createServerTime(maintenanceStart, 0x04),
-		ServerMaintenanceEndTime:   createServerTime(maintenanceEnd, 0x00),
+		ServerMaintenanceEndTime:   createServerTime(maintenanceEnd, flag),
 	}
 }
 
@@ -87,12 +87,12 @@ type statusServer struct {
 	*messageServer
 }
 
-func NewStatusServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *statusServer {
+func NewStatusServer(listenAddress net.IP, serverConfig config.StatusServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *statusServer {
 	s := &statusServer{}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
-		serverConfig:  &serverConfig,
+		serverConfig:  &serverConfig.ServerConfig,
 		bufferSize:    bufferSize,
 		loggingConfig: loggingConfig,
 		ctx:           ctx,
@@ -105,9 +105,11 @@ func NewStatusServer(listenAddress net.IP, serverConfig config.ServerConfig, buf
 		},
 		buildPayload: func(hi UserHelloMessage) interface{} {
 			startTime := time.Now()
-			startOffset := time.Hour * 12
-			endOffset := time.Hour * 24
-			return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(startOffset), startTime.Add(endOffset))
+			if serverConfig.IsResetting {
+				return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(-12*time.Hour), startTime.Add(24*time.Hour), 0x00)
+			} else {
+				return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(-48*time.Hour), startTime.Add(-24*time.Hour), 0x00)
+			}
 		},
 		responseSize: constants.StatusResponseSize,
 	}

@@ -13,6 +13,7 @@ type Config struct {
 	DefaultBufferSize    int
 	Servers              []ServerConfig
 	StaticMessageServers []StaticMessageServerConfig
+	StatusServers        []StatusServerConfig
 	Logging              LoggingConfig
 	Prometheus           PrometheusConfig
 	Mongo                MongoConfig
@@ -38,6 +39,11 @@ type ServerConfig struct {
 type StaticMessageServerConfig struct {
 	ServerConfig
 	BufferContent string
+}
+
+type StatusServerConfig struct {
+	ServerConfig
+	IsResetting bool
 }
 
 type LoggingConfig struct {

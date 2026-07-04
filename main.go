@@ -103,9 +103,6 @@ func main() {
 	for _, serverConfig := range cfg.Servers {
 		if serverConfig.Enabled {
 			switch serverConfig.Type {
-			case config.Status:
-				srv := server.NewStatusServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
-				go srv.Run()
 			case config.World:
 				srv := server.NewWorldServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), worldRepo)
 				go srv.Run()
@@ -156,6 +153,13 @@ func main() {
 	for _, staticMessageServerConfig := range cfg.StaticMessageServers {
 		if staticMessageServerConfig.Enabled {
 			srv := server.NewStaticMessageServer(address, &staticMessageServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(staticMessageServerConfig.Type), "server_name": string(staticMessageServerConfig.Label)}, reg))
+			go srv.Run()
+		}
+	}
+
+	for _, statusServerConfig := range cfg.StatusServers {
+		if statusServerConfig.Enabled {
+			srv := server.NewStatusServer(address, statusServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(statusServerConfig.ServerConfig.Type), "server_name": string(statusServerConfig.ServerConfig.Label)}, reg))
 			go srv.Run()
 		}
 	}
