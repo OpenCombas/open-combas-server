@@ -1,0 +1,81 @@
+name: opencombas
+
+# Non-GNS variant of docker-compose.yml: the Valve GameNetworkingSockets path (gns-relay + gns-gateway)
+# is removed and the combas UDP server is published directly on the host. Use this when Xenia reaches the
+# backend over plain UDP (host networking) rather than through the GNS relay/gateway tunnel.
+#
+# Run from this directory:  docker compose -f docker-compose-nogns.yml up --build
+#
+# Service hostnames resolve on the `opencombas` network, so both apps reach Mongo at mongo:27017. Xenia's
+# Mongoose URI has no database path, so it uses the "test" database; the combas server is told the same via
+# MONGO_DATABASE.
+
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017" # exposed to the host for inspection (mongosh / Compass)
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - opencombas
+
+  combas-server:
+    build:
+      context: .
+    restart: unless-stopped
+    environment:
+      MONGO_URI: "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/"
+      MONGO_DATABASE: "test"
+    volumes:
+      - ./config.toml:/app/config.toml
+    ports:
+      # All combas UDP services (see config.toml) published straight to the host. With GNS removed this is
+      # how the game reaches the backend: point Xenia at this host's IP on these ports.
+      - "1201-1300:1201-1300/udp"
+      - "9090:9090" # Prometheus metrics
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - opencombas
+
+  webservices:
+    # Xenia-WebServices is vendored as a git submodule under external/. It ships a lowercase `dockerfile`;
+    # name it explicitly so it builds on case-sensitive filesystems (Docker otherwise looks for `Dockerfile`).
+    build:
+      context: ./external/Xenia-WebServices
+      dockerfile: dockerfile
+    restart: unless-stopped
+    environment:
+      API_PORT: "36000"
+      MONGO_URI: "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/"
+      SWAGGER_API: "true"
+      nginx: "false"
+      xstorage: "true"
+    ports:
+      - "36000:36000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - opencombas
+
+volumes:
+  mongo-data:
+
+networks:
+  opencombas:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.host_binding_ipv4: "0.0.0.0"

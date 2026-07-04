@@ -61,7 +61,11 @@ func newAreaState(xuid [16]byte, order [8]byte, summary func(areaID byte) (owner
 	for i := 0; i < worldAreaCount; i++ {
 		areaID := byte(i + 1)
 		owner, pointsA, pointsB, pointsC := summary(areaID)
-		a := AreaRecord{
+		// NOTE: PriorityA/B/C (重点目標エリアフラグ) are deliberately left 0. They draw the orange
+		// "priority strategic target" ring on the war map for the player's own nation and are meant to be
+		// set only by a war event, never as part of the default/reset state. Setting them per owning
+		// nation put a ring on every Tarakian area. An event system will drive these later.
+		areas[i] = AreaRecord{
 			AreaID:        areaID,
 			OwningFaction: owner,               // sets the map owner flag (was unset -> only Morskoj rendered)
 			AreaPoints:    battlefieldCapacity, // per-nation occupation denominator (matches the points' 0..cap scale)
@@ -69,15 +73,6 @@ func newAreaState(xuid [16]byte, order [8]byte, summary func(areaID byte) (owner
 			PointsB:       pointsB,
 			PointsC:       pointsC,
 		}
-		switch owner { // priority-target marker for the owning nation
-		case 'A':
-			a.PriorityA = 1
-		case 'B':
-			a.PriorityB = 1
-		case 'C':
-			a.PriorityC = 1
-		}
-		areas[i] = a
 	}
 
 	return AreaState{

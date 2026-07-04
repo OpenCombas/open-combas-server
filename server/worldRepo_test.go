@@ -104,6 +104,12 @@ func TestRepositorySeedAndReadLive(t *testing.T) {
 		t.Fatalf("EnsureSchema (second run): %v", err)
 	}
 
+	// EnsureSchema no longer seeds battlefields (that is the reset tool's job); insert the static layout
+	// here so the read-back / derivation round-trip can still be exercised.
+	if _, err := repo.battlefields.InsertMany(ctx, toAny(seedBattlefields())); err != nil {
+		t.Fatalf("seed battlefields: %v", err)
+	}
+
 	bfs, err := repo.BattlefieldsByArea(ctx, 1)
 	if err != nil {
 		t.Fatalf("BattlefieldsByArea: %v", err)

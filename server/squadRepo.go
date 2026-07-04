@@ -47,6 +47,7 @@ type SquadMemberRecord struct {
 	XUID       string `bson:"xuid"`
 	UserID     string `bson:"userId"`
 	Gamertag   string `bson:"gamertag"`
+	Name       string `bson:"name,omitempty"` // in-squad member name (distinct from Live gamertag); must be unique in the squad
 	Leader     bool   `bson:"leader"`
 	UserNumber int32  `bson:"userNumber"`
 	Rank       int32  `bson:"rank"`
@@ -221,6 +222,86 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, userID strin
 		_, _ = r.profiles.UpdateOne(ctx, bson.M{"xuid": memberXUID}, bson.M{"$set": bson.M{"teamId": ""}})
 	}
 	return '1', nil // Delete Complete
+}
+
+// squadMemberCap is the maximum roster size (the login wire blob holds 20 member records).
+const squadMemberCap = 20
+
+// firstFreeUserNumber returns the lowest hound number (0..99) not already held by a member.
+func firstFreeUserNumber(members []SquadMemberRecord) int32 {
+	used := make(map[int32]bool, len(members))
+	for _, m := range members {
+		used[m.UserNumber] = true
+	}
+	for n := int32(0); n <= 99; n++ {
+		if !used[n] {
+			return n
+		}
+	}
+	return 0
+}
+
+// AddMember commits a joining player to a squad (the code-182 join-commit sent by the squad host).
+// It resolves/mints the joiner's persistent profile (keyed by their XUID), appends them to the roster and
+// links their profile to the team. Returns the status byte the client expects (parser sub_823BDAA0) plus
+// the joiner's assigned User ID on success:
+//
+//	'1' success (+ userID)            '2' Member Number Over Error (squad full)
+//	'3' User Name Unique Error        '0' unknown (target squad does not exist)
+//
+// Idempotent: a player who is already a member gets their existing User ID back with '1'.
+//
+// The '3' "User Name Unique Error" check is against the in-squad NAME (not the Live gamertag): gamertags
+// are globally unique in real play, so keying uniqueness on them would wrongly reject legitimate joins
+// whenever two consoles share a gamertag (as in local testing).
+func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag, name string, rank int32) (byte, string, error) {
+	sq, err := r.SquadByTeamID(ctx, teamID)
+	if err != nil {
+		return 0, "", err
+	}
+	if sq == nil {
+		return '0', "", nil // target squad does not exist -> "Unknown Error"
+	}
+
+	for _, m := range sq.Members {
+		if m.XUID == xuid {
+			return '1', m.UserID, nil // already a member -> return existing id (idempotent)
+		}
+		if name != "" && m.Name == name {
+			return '3', "", nil // User Name Unique Error (in-squad name already taken)
+		}
+	}
+	if len(sq.Members) >= squadMemberCap {
+		return '2', "", nil // Member Number Over Error (squad full)
+	}
+
+	profile, err := r.EnsureProfile(ctx, xuid, gamertag)
+	if err != nil {
+		return 0, "", err
+	}
+
+	member := SquadMemberRecord{
+		XUID:       xuid,
+		UserID:     profile.UserID,
+		Gamertag:   gamertag,
+		Name:       name,
+		Leader:     false,
+		UserNumber: firstFreeUserNumber(sq.Members),
+		Rank:       rank,
+	}
+	if _, err := r.squads.UpdateOne(ctx,
+		bson.M{"teamId": teamID},
+		bson.M{"$push": bson.M{"members": member}},
+	); err != nil {
+		return 0, "", err
+	}
+	if _, err := r.profiles.UpdateOne(ctx,
+		bson.M{"xuid": xuid},
+		bson.M{"$set": bson.M{"teamId": teamID}},
+	); err != nil {
+		return 0, "", err
+	}
+	return '1', profile.UserID, nil
 }
 
 // SetMemberNumber assigns a member's "hound number" (0..99, unique within the squad), returning the

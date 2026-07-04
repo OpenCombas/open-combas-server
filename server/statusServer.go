@@ -108,7 +108,7 @@ func NewStatusServer(listenAddress net.IP, serverConfig config.StatusServerConfi
 			if serverConfig.IsResetting {
 				return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(-12*time.Hour), startTime.Add(24*time.Hour), 0x00)
 			} else {
-				return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(-48*time.Hour), startTime.Add(-24*time.Hour), 0x00)
+				return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(120*time.Hour), startTime.Add(140*time.Hour), 0x00)
 			}
 		},
 		responseSize: constants.StatusResponseSize,

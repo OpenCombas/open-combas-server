@@ -70,6 +70,7 @@ const (
 	WorldMapDetail ServerType = "WorldMapDetail"
 	WorldNews      ServerType = "WorldNews"
 	SquadReg       ServerType = "SquadReg"
+	SquadJoin      ServerType = "SquadJoin"
 	SquadLogin     ServerType = "SquadLogin"
 	SquadAck       ServerType = "SquadAck"
 	SquadConfig    ServerType = "SquadConfig"

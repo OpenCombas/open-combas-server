@@ -75,8 +75,13 @@ func NewWorldRepository(store *persistence.Store) *WorldRepository {
 	}
 }
 
-// EnsureSchema creates the indexes and seeds the collections from the static model if they are empty.
-// Seeding is idempotent: existing (already-mutated) war state is never overwritten.
+// EnsureSchema creates the indexes and seeds the nations collection from the static model if empty.
+//
+// It deliberately does NOT seed battlefields: initializing the battlefield war state is an explicit,
+// destructive operation owned by the reset tool (package reset / cmd/reset), not something the server does
+// on boot. Until a reset has run, the battlefields collection is empty and the world/area servers fall
+// back to the static model, so the served bytes are unchanged. Nations still seed here (no reset for them
+// yet). Seeding is idempotent: existing (already-mutated) state is never overwritten.
 func (r *WorldRepository) EnsureSchema(ctx context.Context) error {
 	if _, err := r.battlefields.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "areaId", Value: 1}, {Key: "mapId", Value: 1}},
@@ -91,9 +96,6 @@ func (r *WorldRepository) EnsureSchema(ctx context.Context) error {
 		return err
 	}
 
-	if err := seedIfEmpty(ctx, r.battlefields, toAny(seedBattlefields())); err != nil {
-		return err
-	}
 	return seedIfEmpty(ctx, r.nations, toAny(seedNations()))
 }
 
@@ -108,6 +110,19 @@ func (r *WorldRepository) BattlefieldsByArea(ctx context.Context, areaID byte) (
 		return nil, err
 	}
 	return out, nil
+}
+
+// BattlefieldByAreaMap returns the single battlefield (area, map), or (nil, nil) if none exists.
+func (r *WorldRepository) BattlefieldByAreaMap(ctx context.Context, areaID, mapID byte) (*Battlefield, error) {
+	var b Battlefield
+	err := r.battlefields.FindOne(ctx, bson.M{"areaId": int32(areaID), "mapId": int32(mapID)}).Decode(&b)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &b, nil
 }
 
 // BattlefieldsGrouped returns every battlefield keyed by area id (sorted by map id within each area).
