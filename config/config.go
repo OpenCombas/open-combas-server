@@ -77,6 +77,7 @@ const (
 	SquadWithdraw  ServerType = "SquadWithdraw"
 	SquadMemberNum ServerType = "SquadMemberNum"
 	SquadEmblem    ServerType = "SquadEmblem"
+	SquadRanking   ServerType = "SquadRanking"
 	BattleReport   ServerType = "BattleReport"
 	Buffer         ServerType = "Buffer"
 	OrderedMessage ServerType = "OrderedMessage"

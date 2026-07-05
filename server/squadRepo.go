@@ -4,6 +4,8 @@ import (
 	"ChromehoundsStatusServer/persistence"
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -27,10 +29,16 @@ const (
 	squadsCollection   = "squads"
 	profilesCollection = "combasProfiles"
 	countersCollection = "combasCounters"
+	statsCollection    = "squadStats"
 
 	teamSeqName = "team"
 	userSeqName = "user"
-	seasonID    = "0001"
+	seasonID    = "0001" // the id-format season used in TeamID/UserID ("TM0001..."); not the war season
+
+	// currentSeason is the war season the stats are bucketed under and the ranking reports (the game's
+	// "current season", shown as season 14). Ingest and ranking must agree on this key. TODO: make this
+	// config/world-state driven rather than a constant.
+	currentSeason = "0014"
 )
 
 // CombasProfile is the persistent identity for one player.
@@ -111,6 +119,7 @@ type SquadRepository struct {
 	squads   *mongo.Collection
 	profiles *mongo.Collection
 	counters *mongo.Collection
+	stats    *mongo.Collection
 }
 
 func NewSquadRepository(store *persistence.Store) *SquadRepository {
@@ -118,7 +127,128 @@ func NewSquadRepository(store *persistence.Store) *SquadRepository {
 		squads:   store.Collection(squadsCollection),
 		profiles: store.Collection(profilesCollection),
 		counters: store.Collection(countersCollection),
+		stats:    store.Collection(statsCollection),
 	}
+}
+
+// StatBucket holds a running total plus per-season sub-totals (the squad ranking is queryable as Total
+// or current Season). BySeason is keyed by season id (e.g. "0001").
+type StatBucket struct {
+	Total    int32            `bson:"total"`
+	BySeason map[string]int32 `bson:"bySeason,omitempty"`
+}
+
+// SquadStats is the persistent per-squad leaderboard state, accumulated from battle reports (1254). It
+// feeds the squad ranking (1262): Renown, Capture Points, and Renown-Per-Member (derived at read time as
+// Renown / live member count).
+type SquadStats struct {
+	TeamID        string     `bson:"teamId"`
+	CapturePoints StatBucket `bson:"capturePoints"`
+	Renown        StatBucket `bson:"renown"`
+	Battles       struct {
+		Won    int32 `bson:"won"`
+		Played int32 `bson:"played"`
+	} `bson:"battles"`
+}
+
+// isRealTeam reports whether teamID is a real squad (vs an AI/CPU placeholder like "BBB9999..."). Real
+// squad ids are the assigned "TM" + digits form.
+func isRealTeam(teamID string) bool { return strings.HasPrefix(teamID, "TM") }
+
+// CreditBattle records one battle's result into squad stats: the winning squad gains capture points and
+// renown (into both the running total and the season bucket) plus a win; both squads get a played count.
+// AI/CPU sides (non-"TM" ids) are skipped. Upserts, so a squad's first battle creates its stats doc.
+func (r *SquadRepository) CreditBattle(ctx context.Context, winnerTeam, loserTeam string, capturePoints, renown int32, season string) error {
+	if isRealTeam(winnerTeam) {
+		inc := bson.M{
+			"capturePoints.total":              capturePoints,
+			"capturePoints.bySeason." + season: capturePoints,
+			"renown.total":                     renown,
+			"renown.bySeason." + season:        renown,
+			"battles.won":                      int32(1),
+			"battles.played":                   int32(1),
+		}
+		if _, err := r.stats.UpdateOne(ctx, bson.M{"teamId": winnerTeam}, bson.M{"$inc": inc}, options.UpdateOne().SetUpsert(true)); err != nil {
+			return err
+		}
+	}
+	if isRealTeam(loserTeam) && loserTeam != winnerTeam {
+		if _, err := r.stats.UpdateOne(ctx, bson.M{"teamId": loserTeam}, bson.M{"$inc": bson.M{"battles.played": int32(1)}}, options.UpdateOne().SetUpsert(true)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RankEntry is one ranked squad for the leaderboard (1262).
+type RankEntry struct {
+	TeamID string
+	Name   string
+	Value  int32
+}
+
+// RankSquads returns every squad ranked descending by the requested stat. kbn: 1=Renown,
+// 2=Capture-Points, 3=Renown-Per-Member. useSeason selects the season bucket vs the running total.
+// Squads with no accumulated stats yet rank with 0. Renown-Per-Member divides by the live roster size.
+func (r *SquadRepository) RankSquads(ctx context.Context, kbn int, useSeason bool, season string) ([]RankEntry, error) {
+	var squads []Squad
+	if cur, err := r.squads.Find(ctx, bson.M{}); err != nil {
+		return nil, err
+	} else if err := cur.All(ctx, &squads); err != nil {
+		return nil, err
+	}
+
+	var stats []SquadStats
+	if cur, err := r.stats.Find(ctx, bson.M{}); err != nil {
+		return nil, err
+	} else if err := cur.All(ctx, &stats); err != nil {
+		return nil, err
+	}
+	byTeam := make(map[string]SquadStats, len(stats))
+	for _, s := range stats {
+		byTeam[s.TeamID] = s
+	}
+
+	bucket := func(b StatBucket) int32 {
+		if useSeason {
+			return b.BySeason[season]
+		}
+		return b.Total
+	}
+	entries := make([]RankEntry, 0, len(squads))
+	for _, sq := range squads {
+		st := byTeam[sq.TeamID]
+		renown := bucket(st.Renown)
+		var val int32
+		switch kbn {
+		case 2:
+			val = bucket(st.CapturePoints)
+		case 3:
+			n := int32(len(sq.Members))
+			if n < 1 {
+				n = 1
+			}
+			val = renown / n
+		default: // 1 = Renown
+			val = renown
+		}
+		entries = append(entries, RankEntry{TeamID: sq.TeamID, Name: sq.Name, Value: val})
+	}
+	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Value > entries[j].Value })
+	return entries, nil
+}
+
+// SquadStatsByTeamID returns a squad's accumulated stats, or (nil, nil) if it has none yet.
+func (r *SquadRepository) SquadStatsByTeamID(ctx context.Context, teamID string) (*SquadStats, error) {
+	var st SquadStats
+	err := r.stats.FindOne(ctx, bson.M{"teamId": teamID}).Decode(&st)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &st, nil
 }
 
 func formatTeamID(seq int64) string { return fmt.Sprintf("TM%s%012d", seasonID, seq) }
@@ -132,8 +262,14 @@ func (r *SquadRepository) EnsureSchema(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	_, err := r.profiles.Indexes().CreateOne(ctx, mongo.IndexModel{
+	if _, err := r.profiles.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "xuid", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return err
+	}
+	_, err := r.stats.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "teamId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	})
 	return err

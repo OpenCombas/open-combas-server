@@ -125,6 +125,40 @@ func (r *WorldRepository) BattlefieldByAreaMap(ctx context.Context, areaID, mapI
 	return &b, nil
 }
 
+// occField maps a nation char ('A'/'B'/'C') to its occupation field name; "" for an unknown nation.
+func occField(nation byte) string {
+	switch nation {
+	case 'A':
+		return "occA"
+	case 'B':
+		return "occB"
+	case 'C':
+		return "occC"
+	}
+	return ""
+}
+
+// ApplyBattleOccupation moves occupation on one battlefield after a battle: the winning nation gains
+// `delta` (capped at capacity), the losing nation loses `delta` (floored at 0). Atomic clamp via a
+// pipeline update. A no-op when the winner nation is unknown or delta is 0.
+func (r *WorldRepository) ApplyBattleOccupation(ctx context.Context, areaID, mapID, winnerNation, loserNation byte, delta int32) error {
+	winField, loseField := occField(winnerNation), occField(loserNation)
+	if winField == "" || delta == 0 {
+		return nil
+	}
+	set := bson.M{
+		winField: bson.M{"$min": bson.A{bson.M{"$add": bson.A{"$" + winField, delta}}, "$capacity"}},
+	}
+	if loseField != "" && loseField != winField {
+		set[loseField] = bson.M{"$max": bson.A{bson.M{"$subtract": bson.A{"$" + loseField, delta}}, int32(0)}}
+	}
+	_, err := r.battlefields.UpdateOne(ctx,
+		bson.M{"areaId": int32(areaID), "mapId": int32(mapID)},
+		mongo.Pipeline{{{Key: "$set", Value: set}}},
+	)
+	return err
+}
+
 // BattlefieldsGrouped returns every battlefield keyed by area id (sorted by map id within each area).
 func (r *WorldRepository) BattlefieldsGrouped(ctx context.Context) (map[byte][]Battlefield, error) {
 	cur, err := r.battlefields.Find(ctx, bson.M{},

@@ -3,39 +3,38 @@ package server
 import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
+	"ChromehoundsStatusServer/logging"
 	"context"
+	"encoding/binary"
 	"net"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// Battle-report (mission-result) submission.
+// Battle-report (mission-result) submission + war-state ingest.
 //
 // Reverse-engineered from Release.xex: builder sub_823BEF10 (internal message code 194) sends a fixed
-// 565-byte binary report to port 1020+194 = 1214 (newer revision 1254); recordSize -1; parser
-// sub_823BD940. This is the post-mission submission that drives war progression -- the client fires it
-// at the end of a conquest sortie and retries 6x; with nothing listening the OS answers ICMP
-// port-unreachable and the mission cannot finalise.
+// 565-byte binary report to port 1020+194 = 1214 (retail 1254); assembler sub_8217D4D0; response parser
+// sub_823BD940. Only the mission HOST posts, exactly once per battle, WIN OR LOSE, and the report is an
+// objective record of both squads -- so ingest is single-shot and the winner must be read from the body,
+// never inferred from the sender. Full field map + accumulation design: SQUAD_STATS_DESIGN.md.
 //
-// REQUEST body (565 bytes, after the 32-byte header), as observed in pcaps/end_mission.pcapng frame 33:
-//   +0   gamertag of the submitter, null-padded ("ibac")
-//   +16  season id ("0001")
-//   +32  battle metadata (counts) followed by a list of participating-squad entries; each entry carries
-//        a faction char + team id ("TM"+16) + squad name + member rows (user id "US"+16 + gamertag).
-//        Observed: our squad 'B'/"TM0001000000000001"/"OpenCombas" (member "US0001000000000001"/"ibac")
-//        and an AI placeholder "AAA"/"9999..."/"DummySquadName"; the tail holds the outcome bytes.
-//   Decoding the individual occupation/kill/win-loss fields is deferred to the stateful war-state layer;
-//   the static server only needs to acknowledge the report.
+// REQUEST body (565 bytes, after the 32-byte header) -- the fields we ingest:
+//   +0x23 area id            +0x24 map id
+//   +0x25 block-1 nation     +0x26 block-1 team id ("TM.." or an AI placeholder like "BBB9999..")
+//   +0x11C block-1 (team-0) winner-merit slot
+//   +0x12C block-2 nation    +0x12D block-2 team id
+//   +0x223 block-2 (team-1) winner-merit slot
+//   +0x233 WINNER nation char   +0x234 occupation delta v92 (0..255, ~100 on a clean win)
+// The winner nation matches exactly one block; that block's team won and its merit slot holds the earned
+// renown (the loser's slot is 0 even when the loser was active). ACV/hound/COMBAS breakdowns are NOT in
+// the report (they live only in local xstorage), so the squad leaderboard sources entirely from here.
 //
-// RESPONSE body is an ASCII CSV status "<end>,<bf>,<area>,<nation>" read by sub_823BD940 at even offsets:
-//   body[0] '1' = "Normal End" (anything else => "Unknown Error")
-//   body[2] '1' = "Battle Field" event   (battlefield captured)
-//   body[4] '1' = "Area" event           (area captured)
-//   body[6] '1' = nation defeated        ("国家勢力を落とした")
-// odd offsets are ',' separators. The static server returns "1,0,0,0": accept the report, signal Normal
-// End, raise no special conquest events (those will be emitted by the dynamic war engine later).
-// See project_combas_server_protocol memory.
+// RESPONSE body is an ASCII CSV status read by sub_823BD940 at even offsets:
+//   body[0] '1' = "Normal End"   body[2] '1' = battlefield-captured   body[4] '1' = area-captured
+//   body[6] '1' = nation-defeated.  We accept the report ("1") and raise no special conquest events yet
+//   ("1,0,0,0"); the occupation change is persisted so the war map reflects it on the next query.
 
 // BattleReportAck is header(32) + a 7-byte CSV status body. Total = constants.BattleReportResponseSize (39).
 type BattleReportAck struct {
@@ -51,23 +50,87 @@ type BattleReportAck struct {
 
 func CreateBattleReportAck(xuid [16]byte, order [8]byte) BattleReportAck {
 	return BattleReportAck{
-		Header:      CreateHeader(xuid, order),
-		Status:      '1', // Normal End
-		Sep1:        ',',
-		BattleField: '0',
-		Sep2:        ',',
-		Area:        '0',
-		Sep3:        ',',
-		Nation:      '0',
+		Header: CreateHeader(xuid, order),
+		Status: '1', Sep1: ',', BattleField: '0', Sep2: ',', Area: '0', Sep3: ',', Nation: '0',
 	}
+}
+
+const battleReportBodySize = 565
+
+// BattleResult is the ingestable outcome extracted from a 1254 report.
+type BattleResult struct {
+	AreaID, MapID             byte
+	WinnerNation, LoserNation byte
+	WinnerTeam, LoserTeam     string
+	OccDelta                  int32 // war-map occupation gained by the winner (== "Capture Points")
+	WinnerMerit               int32 // winner's earned merit (== the squad "Renown" gain)
+}
+
+// parseBattleReport pulls the outcome fields from a 565-byte report body. Returns false if the packet is
+// too short or the winner nation matches neither participating block.
+func parseBattleReport(packet []byte) (BattleResult, bool) {
+	off := constants.MinHelloMessageSize
+	if len(packet) < off+battleReportBodySize {
+		return BattleResult{}, false
+	}
+	b := packet[off:]
+	nationA, teamA := b[0x25], trimNullString(b[0x26:0x26+20])
+	nationB, teamB := b[0x12C], trimNullString(b[0x12D:0x12D+20])
+
+	r := BattleResult{
+		AreaID:       b[0x23],
+		MapID:        b[0x24],
+		WinnerNation: b[0x233],
+		OccDelta:     int32(b[0x234]),
+	}
+	switch r.WinnerNation {
+	case nationA:
+		r.WinnerTeam, r.LoserTeam, r.LoserNation = teamA, teamB, nationB
+		r.WinnerMerit = int32(b[0x11C]) // team-0 merit slot
+	case nationB:
+		r.WinnerTeam, r.LoserTeam, r.LoserNation = teamB, teamA, nationA
+		r.WinnerMerit = int32(b[0x223]) // team-1 merit slot
+	default:
+		return r, false
+	}
+	return r, true
 }
 
 type battleReportServer struct {
 	*messageServer
+	squadRepo *SquadRepository // nil when Mongo is disabled -> ack only, no accumulation
+	worldRepo *WorldRepository
 }
 
-func NewBattleReportServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *battleReportServer {
-	s := &battleReportServer{}
+// ingest persists one battle report: it moves the fought battlefield's occupation toward the winner and
+// credits the winning squad's capture-points + renown. Best-effort -- failures are logged, never block
+// the ack (the client must always get its response or it retries and the mission stalls).
+func (s *battleReportServer) ingest(packet []byte) {
+	res, ok := parseBattleReport(packet)
+	if !ok {
+		logging.Warn.Printf("[%s] unparseable battle report, acking without ingest", s.serverConfig.Label)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+	defer cancel()
+
+	if s.worldRepo != nil {
+		if err := s.worldRepo.ApplyBattleOccupation(ctx, res.AreaID, res.MapID, res.WinnerNation, res.LoserNation, res.OccDelta); err != nil {
+			logging.Warn.Printf("[%s] occupation update failed: %v", s.serverConfig.Label, err)
+		}
+	}
+	if s.squadRepo != nil {
+		if err := s.squadRepo.CreditBattle(ctx, res.WinnerTeam, res.LoserTeam, res.OccDelta, res.WinnerMerit, currentSeason); err != nil {
+			logging.Warn.Printf("[%s] squad-stat credit failed: %v", s.serverConfig.Label, err)
+		}
+	}
+	logging.Info.Printf("[%s] area %d/%d: winner %c/%s (+%d occ, +%d renown) vs %c/%s",
+		s.serverConfig.Label, res.AreaID, res.MapID, res.WinnerNation, res.WinnerTeam, res.OccDelta, res.WinnerMerit, res.LoserNation, res.LoserTeam)
+}
+
+func NewBattleReportServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, squadRepo *SquadRepository, worldRepo *WorldRepository) *battleReportServer {
+	s := &battleReportServer{squadRepo: squadRepo, worldRepo: worldRepo}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -78,13 +141,19 @@ func NewBattleReportServer(listenAddress net.IP, serverConfig config.ServerConfi
 		wg:            wg,
 		promConfig:    promConfig,
 		reg:           reg,
-		responseSize:  constants.BattleReportResponseSize,
 
 		validatePacket: func(packet []byte, clientAddr *net.UDPAddr) error {
 			return validateWorldPacket(packet, clientAddr, serverConfig.Label)
 		},
-		buildPayload: func(hi UserHelloMessage) interface{} {
-			return CreateBattleReportAck(hi.Xuid, hi.Order)
+		// buildResponse (not buildPayload) so we can read the full report body for ingest.
+		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
+			hi := s.parseHelloMessage(readBuffer)
+			s.ingest(*readBuffer)
+			buf := make([]byte, constants.BattleReportResponseSize)
+			if _, err := binary.Encode(buf, binary.LittleEndian, CreateBattleReportAck(hi.Xuid, hi.Order)); err != nil {
+				return nil, err
+			}
+			return &buf, nil
 		},
 	}
 
