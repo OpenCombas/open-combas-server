@@ -57,19 +57,21 @@ func (s *squadMemberNumberServer) buildMemberNumber(hi UserHelloMessage, packet 
 	}
 
 	_, teamID, userID, number, ok := parseSquadMemberNumber(packet)
-	if !ok || teamID == "" || userID == "" {
+	if !ok || teamID == "" {
 		logging.Warn.Printf("[%s] could not parse member-number request, acking", s.serverConfig.Label)
 		return squadAckState(hi.Xuid, hi.Order, '1')
 	}
 
 	readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 	defer cancel()
-	status, err := s.repo.SetMemberNumber(readCtx, teamID, userID, number)
+	// Resolve the acting member by the reliable header XUID first; the body User ID can be the mis-adopted
+	// leader US (see SetMemberNumber), which would set the wrong member's hound number.
+	status, err := s.repo.SetMemberNumber(readCtx, teamID, string(hi.Xuid[:]), userID, number)
 	if err != nil {
 		logging.Warn.Printf("[%s] set member number failed, acking: %v", s.serverConfig.Label, err)
 		return squadAckState(hi.Xuid, hi.Order, '1')
 	}
-	logging.Info.Printf("[%s] set number %d for %s in %s -> status %q", s.serverConfig.Label, number, userID, teamID, status)
+	logging.Info.Printf("[%s] set number %d for xuid %s (body userID %q) in %s -> status %q", s.serverConfig.Label, number, string(hi.Xuid[:]), userID, teamID, status)
 	return squadAckState(hi.Xuid, hi.Order, status)
 }
 

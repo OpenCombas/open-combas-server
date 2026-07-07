@@ -51,19 +51,22 @@ func (s *squadWithdrawServer) buildWithdraw(hi UserHelloMessage, packet []byte) 
 	}
 
 	_, teamID, userID := parseSquadWithdraw(packet)
-	if teamID == "" || userID == "" {
+	if teamID == "" {
 		logging.Warn.Printf("[%s] could not parse withdraw, acking", s.serverConfig.Label)
 		return squadAckState(hi.Xuid, hi.Order, '1')
 	}
 
 	readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 	defer cancel()
-	status, err := s.repo.RemoveMember(readCtx, teamID, userID)
+	// Resolve the leaver by the reliable header XUID first; the body User ID can be the LEADER's US when
+	// a joiner has adopted the leader's identity in-game (see RemoveMember), which would otherwise remove
+	// the wrong member or wedge on the leader-with-members guard.
+	status, err := s.repo.RemoveMember(readCtx, teamID, string(hi.Xuid[:]), userID)
 	if err != nil {
 		logging.Warn.Printf("[%s] withdraw failed, acking: %v", s.serverConfig.Label, err)
 		return squadAckState(hi.Xuid, hi.Order, '1')
 	}
-	logging.Info.Printf("[%s] withdraw %s from %s -> status %q", s.serverConfig.Label, userID, teamID, status)
+	logging.Info.Printf("[%s] withdraw xuid %s (body userID %q) from %s -> status %q", s.serverConfig.Label, string(hi.Xuid[:]), userID, teamID, status)
 	return squadAckState(hi.Xuid, hi.Order, status)
 }
 

@@ -9,9 +9,9 @@ import (
 )
 
 func TestParseSquadWithdraw(t *testing.T) {
-	pkt := makeRequestPacket(squadXuid, [8]byte{}, "ibacsqtest,TM0001000000000008,US0001000000000008")
+	pkt := makeRequestPacket(squadXuid, [8]byte{}, "ibac,TM0001000000000008,US0001000000000008")
 	gt, team, user := parseSquadWithdraw(pkt)
-	if gt != "ibacsqtest" || team != "TM0001000000000008" || user != "US0001000000000008" {
+	if gt != "ibac" || team != "TM0001000000000008" || user != "US0001000000000008" {
 		t.Errorf("parse = (%q,%q,%q)", gt, team, user)
 	}
 }
@@ -44,7 +44,7 @@ func TestRemoveMemberLive(t *testing.T) {
 	}
 
 	// Unknown team -> '3'.
-	if st, _ := repo.RemoveMember(ctx, "TM9999999999999999", "US0001000000000001"); st != '3' {
+	if st, _ := repo.RemoveMember(ctx, "TM9999999999999999", "", "US0001000000000001"); st != '3' {
 		t.Errorf("unknown team status = %q, want '3'", st)
 	}
 
@@ -58,20 +58,22 @@ func TestRemoveMemberLive(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed second member: %v", err)
 	}
-	if st, _ := repo.RemoveMember(ctx, squad.TeamID, leader.UserID); st != '2' {
+	if st, _ := repo.RemoveMember(ctx, squad.TeamID, "", leader.UserID); st != '2' {
 		t.Errorf("leader-with-members status = %q, want '2'", st)
 	}
 
-	// Non-leader member leaves -> '1', squad survives.
-	if st, _ := repo.RemoveMember(ctx, squad.TeamID, "US0001000000000002"); st != '1' {
-		t.Errorf("member leave status = %q, want '1'", st)
+	// Non-leader member leaves. It sends the LEADER's US in the withdraw body (a joiner adopts the
+	// leader's identity in-game) but carries its own header XUID "AAAA" -> must resolve by XUID and
+	// remove the MEMBER, not the leader -> '1', squad survives.
+	if st, _ := repo.RemoveMember(ctx, squad.TeamID, "AAAA", leader.UserID); st != '1' {
+		t.Errorf("member leave (XUID-authoritative) status = %q, want '1'", st)
 	}
 	if got, _ := repo.SquadByTeamID(ctx, squad.TeamID); got == nil || len(got.Members) != 1 {
 		t.Errorf("squad should survive with 1 member, got %+v", got)
 	}
 
 	// Solo leader leaves -> '1', squad disbands and profile unlinked.
-	if st, _ := repo.RemoveMember(ctx, squad.TeamID, leader.UserID); st != '1' {
+	if st, _ := repo.RemoveMember(ctx, squad.TeamID, "", leader.UserID); st != '1' {
 		t.Errorf("solo leader leave status = %q, want '1'", st)
 	}
 	if got, _ := repo.SquadByTeamID(ctx, squad.TeamID); got != nil {

@@ -23,18 +23,18 @@ func joinPacket(body string) []byte {
 // the %lld joiner XUID (decimal 2533275239575185) must convert to the 16-char upper-hex 000900001AC5EE91,
 // the same key the joiner's own message headers use.
 func TestParseSquadJoin(t *testing.T) {
-	pkt := joinPacket("ibacgns,TM0001000000000001,2533275239575185,ibac,34,0")
+	pkt := joinPacket("notibac,TM0001000000000001,2533275239575185,ibac,34,0")
 	gt, team, xuid, name, rank, ok := parseSquadJoin(pkt)
 	if !ok {
 		t.Fatal("parse failed")
 	}
-	if gt != "ibacgns" || team != "TM0001000000000001" || xuid != "000900001AC5EE91" || name != "ibac" || rank != 34 {
+	if gt != "notibac" || team != "TM0001000000000001" || xuid != "000900001AC5EE91" || name != "ibac" || rank != 34 {
 		t.Errorf("parse = (%q,%q,%q,%q,%d)", gt, team, xuid, name, rank)
 	}
 }
 
 func TestParseSquadJoinShortBody(t *testing.T) {
-	if _, _, _, _, _, ok := parseSquadJoin(joinPacket("ibacgns,TM0001")); ok {
+	if _, _, _, _, _, ok := parseSquadJoin(joinPacket("notibac,TM0001")); ok {
 		t.Error("expected short body to fail parse")
 	}
 }
@@ -90,13 +90,13 @@ func TestAddMemberLive(t *testing.T) {
 	squad, _ := repo.CreateSquad(ctx, "OpenCombas", "B", leader)
 
 	// Unknown squad -> '0' (Unknown Error), no id.
-	if st, id, _ := repo.AddMember(ctx, "TM9999999999999999", "000900001AC5EE91", "ibacgns", "ibac", 34); st != '0' || id != "" {
+	if st, id, _ := repo.AddMember(ctx, "TM9999999999999999", "000900001AC5EE91", "notibac", "ibac", 34); st != '0' || id != "" {
 		t.Errorf("unknown squad = (%q,%q), want ('0',\"\")", st, id)
 	}
 
 	// Join a new member -> '1' + minted User ID, roster grows to 2. Note the joiner shares the leader's
-	// gamertag "ibacgns" (two consoles, distinct XUIDs) but a distinct in-squad name "ibac" -> must succeed.
-	st, id, err := repo.AddMember(ctx, squad.TeamID, "000900001AC5EE91", "ibacgns", "ibac", 34)
+	// gamertag "notibac" (two consoles, distinct XUIDs) but a distinct in-squad name "ibac" -> must succeed.
+	st, id, err := repo.AddMember(ctx, squad.TeamID, "000900001AC5EE91", "notibac", "ibac", 34)
 	if err != nil || st != '1' || id == "" {
 		t.Fatalf("join = (%q,%q,%v), want ('1',<id>,nil)", st, id, err)
 	}
@@ -104,16 +104,16 @@ func TestAddMemberLive(t *testing.T) {
 	if got == nil || len(got.Members) != 2 {
 		t.Fatalf("roster = %+v, want 2 members", got)
 	}
-	if m := got.Members[1]; m.XUID != "000900001AC5EE91" || m.UserID != id || m.Gamertag != "ibacgns" || m.Name != "ibac" || m.Leader {
+	if m := got.Members[1]; m.XUID != "000900001AC5EE91" || m.UserID != id || m.Gamertag != "notibac" || m.Name != "ibac" || m.Leader {
 		t.Errorf("member = %+v", m)
 	}
 	// Joiner's profile is now linked to the team.
-	if p, _ := repo.EnsureProfile(ctx, "000900001AC5EE91", "ibacgns"); p.TeamID != squad.TeamID {
+	if p, _ := repo.EnsureProfile(ctx, "000900001AC5EE91", "notibac"); p.TeamID != squad.TeamID {
 		t.Errorf("profile team = %q, want %q", p.TeamID, squad.TeamID)
 	}
 
 	// Idempotent: re-joining returns the same id, no duplicate.
-	if st2, id2, _ := repo.AddMember(ctx, squad.TeamID, "000900001AC5EE91", "ibacgns", "ibac", 34); st2 != '1' || id2 != id {
+	if st2, id2, _ := repo.AddMember(ctx, squad.TeamID, "000900001AC5EE91", "notibac", "ibac", 34); st2 != '1' || id2 != id {
 		t.Errorf("re-join = (%q,%q), want ('1',%q)", st2, id2, id)
 	}
 	if got, _ := repo.SquadByTeamID(ctx, squad.TeamID); len(got.Members) != 2 {

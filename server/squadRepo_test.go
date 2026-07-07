@@ -41,6 +41,13 @@ func TestSquadLoginStateFromSquad(t *testing.T) {
 			Leader:     true,
 			UserNumber: 1,
 			Rank:       1,
+		}, {
+			XUID:       "000900006A4B8EEB",
+			UserID:     "US0001000000000002",
+			Gamertag:   "ibac", // mis-sourced Live gamertag (= the lead's)
+			Name:       "notibac",
+			UserNumber: 2,
+			Rank:       1,
 		}},
 		Settings: &SquadSettings{
 			Stance:    0x04,
@@ -90,8 +97,8 @@ func TestSquadLoginStateFromSquad(t *testing.T) {
 	if body[17] != 'B' {
 		t.Errorf("country code = %q, want 'B'", body[17])
 	}
-	if body[18] != 1 {
-		t.Errorf("member count = %d, want 1", body[18])
+	if body[18] != 2 {
+		t.Errorf("member count = %d, want 2", body[18])
 	}
 	if got := int64(binary.LittleEndian.Uint64(body[288:296])); got != 0x000900001AC5EE91 {
 		t.Errorf("member XUID = %#x", got)
@@ -99,8 +106,18 @@ func TestSquadLoginStateFromSquad(t *testing.T) {
 	if uid := string(body[296:314]); uid != "US0001000000000001" {
 		t.Errorf("member UserID = %q", uid)
 	}
+	// Leader has no in-squad Name -> wire UserName falls back to the gamertag ("ibac").
 	if name := string(body[315:319]); name != "ibac" {
-		t.Errorf("member UserName = %q", name)
+		t.Errorf("member[0] UserName = %q, want fallback gamertag 'ibac'", name)
+	}
+	// Member[1] (at body[288+48=336]) HAS a Name -> wire UserName must be the pilot name
+	// ("notibac"), NOT the mis-sourced gamertag ("ibac"). This is what a joining console
+	// self-matches on to derive its US/TM for the lobby handshake.
+	if uid := string(body[344:362]); uid != "US0001000000000002" {
+		t.Errorf("member[1] UserID = %q", uid)
+	}
+	if name := string(body[363:370]); name != "notibac" {
+		t.Errorf("member[1] UserName = %q, want pilot name 'notibac' (not gamertag)", name)
 	}
 	if body[332] != 1 {
 		t.Errorf("leader flag = %d, want 1", body[332])
@@ -180,5 +197,80 @@ func TestSquadRepositoryLive(t *testing.T) {
 	}
 	if got, _ := repo.SquadByName(ctx, "Nonexistent"); got != nil {
 		t.Error("SquadByName should return nil for unknown name")
+	}
+}
+
+// TestAddMemberXUIDAuthoritative verifies the join-commit (code-182) keys idempotency on XUID across the
+// WHOLE roster, so a re-commit of an existing member is never rejected by the unreliable name/gamertag
+// fields (the host mis-sources them from the squad lead / a prior member). Skipped unless MONGO_TEST_URI
+// is set; uses a throwaway database and cleans up after itself.
+func TestAddMemberXUIDAuthoritative(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("set MONGO_TEST_URI to run the live squad-repository test")
+	}
+	ctx := context.Background()
+
+	store, err := persistence.Connect(ctx, uri, "combas_test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer store.Close(ctx)
+
+	repo := NewSquadRepository(store)
+	_ = repo.squads.Drop(ctx)
+	_ = repo.profiles.Drop(ctx)
+	_ = repo.counters.Drop(ctx)
+	t.Cleanup(func() {
+		_ = repo.squads.Drop(ctx)
+		_ = repo.profiles.Drop(ctx)
+		_ = repo.counters.Drop(ctx)
+	})
+	if err := repo.EnsureSchema(ctx); err != nil {
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+
+	leader, _ := repo.EnsureProfile(ctx, "000900000000AAAA", "leader")
+	squad, err := repo.CreateSquad(ctx, "Alpha", "B", leader)
+	if err != nil {
+		t.Fatalf("CreateSquad: %v", err)
+	}
+	tid := squad.TeamID
+
+	// Add B (name "Bee") then A (name "Ace"), so B precedes A in the roster.
+	if st, _, _ := repo.AddMember(ctx, tid, "000900000000BBBB", "gtB", "Bee", 1); st != '1' {
+		t.Fatalf("add B: status %q, want '1'", st)
+	}
+	stA, userA, err := repo.AddMember(ctx, tid, "000900000000ACED", "gtA", "Ace", 1)
+	if err != nil || stA != '1' || userA == "" {
+		t.Fatalf("add A: status %q userID %q err %v", stA, userA, err)
+	}
+
+	// Re-commit A with a MIS-SOURCED name that collides with B (which precedes A in the array). Must
+	// still return '1' with A's original User ID -- the pre-fix single loop returned '3' here, wedging
+	// the re-commit and blocking the rejoin.
+	st, user, err := repo.AddMember(ctx, tid, "000900000000ACED", "wrongGamertag", "Bee", 1)
+	if err != nil {
+		t.Fatalf("re-commit A: %v", err)
+	}
+	if st != '1' || user != userA {
+		t.Errorf("re-commit A: status %q userID %q, want '1' %q", st, user, userA)
+	}
+
+	// The churn re-commit must not create a duplicate roster entry for A.
+	sq, _ := repo.SquadByTeamID(ctx, tid)
+	countA := 0
+	for _, m := range sq.Members {
+		if m.XUID == "000900000000ACED" {
+			countA++
+		}
+	}
+	if countA != 1 {
+		t.Errorf("roster has %d entries for A, want 1", countA)
+	}
+
+	// A genuinely-new XUID whose name collides with an existing member is still rejected with '3'.
+	if st, _, _ := repo.AddMember(ctx, tid, "000900000000CCCC", "gtC", "Bee", 1); st != '3' {
+		t.Errorf("new member with colliding name: status %q, want '3'", st)
 	}
 }

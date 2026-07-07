@@ -243,7 +243,17 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 		m := &state.Data.Members[i]
 		m.XUID = xuidHexToInt64(rec.XUID)
 		copy(m.UserID[:], rec.UserID)
-		copy(m.UserName[:], rec.Gamertag)
+		// The wire member "UserName" (parser sub_823BCD88 "User Name" field) is the in-squad PILOT NAME
+		// -- the value a joining console appears to match its OWN roster record on to derive its assigned
+		// US/TM for the vport-1002 lobby handshake. Send rec.Name (set from the 182 join body), NOT the
+		// Live gamertag: the host mis-sources the 182 gamertag from the squad lead, so a gamertag-keyed
+		// name breaks the joiner's self-match -> null US/TM -> lobby merge never commits. Fall back to the
+		// gamertag only when Name is empty (e.g. the leader, whose reg-supplied pilot name isn't persisted).
+		name := rec.Name
+		if name == "" {
+			name = rec.Gamertag
+		}
+		copy(m.UserName[:], name)
 		if rec.Leader {
 			m.LeaderFlg = 1
 		}

@@ -1,6 +1,7 @@
 [submodule "external/Xenia-WebServices"]
 	path = external/Xenia-WebServices
-	url = https://github.com/AdrianCassar/Xenia-WebServices.git
+	url = https://github.com/OpenCombas/Xenia-Webservices
+	branch = feat/server-authoritative-synthetic-ip
 [submodule "external/xenia-gns-relay"]
 	path = external/xenia-gns-relay
 	url = https://github.com/opencombas/xenia-gns-relay

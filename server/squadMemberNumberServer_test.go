@@ -24,12 +24,12 @@ func memberNumberPacket(gamertag, teamID, userID string, number byte) []byte {
 }
 
 func TestParseSquadMemberNumber(t *testing.T) {
-	pkt := memberNumberPacket("ibacsqtest", "TM0001000000000009", "US0001000000000008", 0x08)
+	pkt := memberNumberPacket("ibac", "TM0001000000000009", "US0001000000000008", 0x08)
 	gt, team, user, num, ok := parseSquadMemberNumber(pkt)
 	if !ok {
 		t.Fatal("parse failed")
 	}
-	if gt != "ibacsqtest" || team != "TM0001000000000009" || user != "US0001000000000008" || num != 8 {
+	if gt != "ibac" || team != "TM0001000000000009" || user != "US0001000000000008" || num != 8 {
 		t.Errorf("parse = (%q,%q,%q,%d)", gt, team, user, num)
 	}
 }
@@ -65,11 +65,11 @@ func TestSetMemberNumberLive(t *testing.T) {
 	squad, _ := repo.CreateSquad(ctx, "OpenCombas", "B", leader)
 
 	// Unknown team -> '3'.
-	if st, _ := repo.SetMemberNumber(ctx, "TM9999999999999999", leader.UserID, 8); st != '3' {
+	if st, _ := repo.SetMemberNumber(ctx, "TM9999999999999999", "", leader.UserID, 8); st != '3' {
 		t.Errorf("unknown team = %q, want '3'", st)
 	}
 	// Assign 8 to the leader -> '1', persisted.
-	if st, _ := repo.SetMemberNumber(ctx, squad.TeamID, leader.UserID, 8); st != '1' {
+	if st, _ := repo.SetMemberNumber(ctx, squad.TeamID, "", leader.UserID, 8); st != '1' {
 		t.Errorf("assign = %q, want '1'", st)
 	}
 	if got, _ := repo.SquadByTeamID(ctx, squad.TeamID); got == nil || got.Members[0].UserNumber != 8 {
@@ -84,11 +84,28 @@ func TestSetMemberNumberLive(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed member: %v", err)
 	}
-	if st, _ := repo.SetMemberNumber(ctx, squad.TeamID, leader.UserID, 8); st != '2' {
+	if st, _ := repo.SetMemberNumber(ctx, squad.TeamID, "", leader.UserID, 8); st != '2' {
 		t.Errorf("collision = %q, want '2'", st)
 	}
 	// Unknown member -> '3'.
-	if st, _ := repo.SetMemberNumber(ctx, squad.TeamID, "US0000000000000000", 5); st != '3' {
+	if st, _ := repo.SetMemberNumber(ctx, squad.TeamID, "", "US0000000000000000", 5); st != '3' {
 		t.Errorf("unknown member = %q, want '3'", st)
+	}
+
+	// XUID-authoritative: member "BBBB" sets its number while sending the LEADER's US in the body -> must
+	// resolve by XUID to BBBB (not the leader) -> '1', and BBBB (not the leader) gets number 7. (7 is free:
+	// the leader holds 8, BBBB holds 8.)
+	if st, _ := repo.SetMemberNumber(ctx, squad.TeamID, "BBBB", leader.UserID, 7); st != '1' {
+		t.Errorf("XUID-authoritative set = %q, want '1'", st)
+	}
+	if sqAfter, _ := repo.SquadByTeamID(ctx, squad.TeamID); sqAfter != nil {
+		for _, m := range sqAfter.Members {
+			if m.XUID == "BBBB" && m.UserNumber != 7 {
+				t.Errorf("BBBB number = %d, want 7 (resolved by XUID)", m.UserNumber)
+			}
+			if m.UserID == leader.UserID && m.UserNumber != 8 {
+				t.Errorf("leader number = %d, want 8 (must be untouched)", m.UserNumber)
+			}
+		}
 	}
 }

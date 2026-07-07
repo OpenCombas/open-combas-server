@@ -311,11 +311,35 @@ func (r *SquadRepository) EnsureProfile(ctx context.Context, xuid, gamertag stri
 	return p, nil
 }
 
-// RemoveMember withdraws a member (by user id) from a squad, returning the status byte the client
-// expects (parser sub_823BDB88): '1' Delete Complete, '2' Leader Can't Delete, '3' Target Data None.
-// A leader may only leave when they are the last member (the squad then disbands); a leader abandoning
-// remaining members is rejected with '2'.
-func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, userID string) (byte, error) {
+// ProfileByXUID returns a player's persistent profile, or (nil, nil) if they have none yet. Unlike
+// EnsureProfile it never mints -- used to resolve the requester's own assigned User ID (e.g. the squad
+// host's US, to echo back in the 182 join reply) without side effects.
+func (r *SquadRepository) ProfileByXUID(ctx context.Context, xuid string) (*CombasProfile, error) {
+	var p CombasProfile
+	err := r.profiles.FindOne(ctx, bson.M{"xuid": xuid}).Decode(&p)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// RemoveMember withdraws a member from a squad, returning the status byte the client expects (parser
+// sub_823BDB88): '1' Delete Complete, '2' Leader Can't Delete, '3' Target Data None. A leader may only
+// leave when they are the last member (the squad then disbands); a leader abandoning remaining members
+// is rejected with '2'.
+//
+// The member is resolved by XUID first (the reliable packet-header identity of the leaving console),
+// falling back to the body User ID only when no XUID match is found. This is essential because a joiner
+// commonly carries the LEADER's US in its own myIdentity -- the title derives a joiner's identity from
+// the shared squad data and adopts the leader's US (confirmed 2026-07-07: both consoles' saves stored
+// US0001000000000001) -- so the withdraw body's User ID points at the leader. Keying on the requester's
+// XUID removes the correct console; keying on the body US would try to remove the leader and wedge on the
+// leader-with-members guard, so neither console could ever leave. 183 is always a self-leave (no kick
+// path), so the header XUID is exactly the departing member.
+func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, xuid, userID string) (byte, error) {
 	sq, err := r.SquadByTeamID(ctx, teamID)
 	if err != nil {
 		return 0, err
@@ -325,10 +349,20 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, userID strin
 	}
 
 	idx := -1
-	for i, m := range sq.Members {
-		if m.UserID == userID {
-			idx = i
-			break
+	if xuid != "" {
+		for i, m := range sq.Members {
+			if m.XUID == xuid {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx == -1 { // fall back to the (less reliable) body User ID
+		for i, m := range sq.Members {
+			if m.UserID == userID {
+				idx = i
+				break
+			}
 		}
 	}
 	if idx == -1 {
@@ -338,7 +372,10 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, userID strin
 		return '2', nil // Leader Can't Delete (would orphan the remaining members)
 	}
 
+	// Identify the matched member by its STORED ids -- never the passed-in userID, which may be the
+	// mis-adopted leader US.
 	memberXUID := sq.Members[idx].XUID
+	memberUserID := sq.Members[idx].UserID
 	if len(sq.Members) <= 1 {
 		// Last member leaving -> disband the squad entirely.
 		if _, err := r.squads.DeleteOne(ctx, bson.M{"teamId": teamID}); err != nil {
@@ -347,7 +384,7 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, userID strin
 	} else {
 		if _, err := r.squads.UpdateOne(ctx,
 			bson.M{"teamId": teamID},
-			bson.M{"$pull": bson.M{"members": bson.M{"userId": userID}}},
+			bson.M{"$pull": bson.M{"members": bson.M{"userId": memberUserID}}},
 		); err != nil {
 			return 0, err
 		}
@@ -385,11 +422,14 @@ func firstFreeUserNumber(members []SquadMemberRecord) int32 {
 //	'1' success (+ userID)            '2' Member Number Over Error (squad full)
 //	'3' User Name Unique Error        '0' unknown (target squad does not exist)
 //
-// Idempotent: a player who is already a member gets their existing User ID back with '1'.
+// Idempotent on XUID: a player already on the roster gets their existing User ID back with '1', checked
+// across the WHOLE roster before any name/fullness rejection so a re-commit can never be wrongly refused.
 //
-// The '3' "User Name Unique Error" check is against the in-squad NAME (not the Live gamertag): gamertags
-// are globally unique in real play, so keying uniqueness on them would wrongly reject legitimate joins
-// whenever two consoles share a gamertag (as in local testing).
+// XUID is the only reliable identity in the 182 body -- the host mis-sources the gamertag/name fields
+// (observed pulling them from the squad lead / a prior member), so uniqueness/idempotency must key on XUID.
+// The '3' "User Name Unique Error" is enforced only for a genuinely-new XUID with a non-empty in-squad
+// name colliding with a different member (not the Live gamertag: gamertags collide across consoles in
+// local testing).
 func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag, name string, rank int32) (byte, string, error) {
 	sq, err := r.SquadByTeamID(ctx, teamID)
 	if err != nil {
@@ -399,12 +439,26 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 		return '0', "", nil // target squad does not exist -> "Unknown Error"
 	}
 
+	// Idempotency FIRST, across the whole roster: a player already on the roster gets their existing
+	// User ID back regardless of name/gamertag. XUID is the only reliable identity field -- the host
+	// sources the gamertag/name fields of the code-182 commit unreliably (observed mis-sourced from the
+	// squad lead / a prior member), so those must never reject a re-commit of an existing member.
+	// (The previous single loop returned '3' as soon as it hit a member sharing the incoming name, which
+	// could fire before this player's own entry was reached and wedge a still-present member's re-commit
+	// during join churn.)
 	for _, m := range sq.Members {
 		if m.XUID == xuid {
-			return '1', m.UserID, nil // already a member -> return existing id (idempotent)
+			return '1', m.UserID, nil
 		}
-		if name != "" && m.Name == name {
-			return '3', "", nil // User Name Unique Error (in-squad name already taken)
+	}
+
+	// Genuinely new member: enforce in-squad name uniqueness against the OTHER members only, and only
+	// for a non-empty name (an empty/omitted name carries no uniqueness constraint).
+	if name != "" {
+		for _, m := range sq.Members {
+			if m.Name == name {
+				return '3', "", nil // User Name Unique Error (in-squad name already taken)
+			}
 		}
 	}
 	if len(sq.Members) >= squadMemberCap {
@@ -425,11 +479,26 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 		UserNumber: firstFreeUserNumber(sq.Members),
 		Rank:       rank,
 	}
-	if _, err := r.squads.UpdateOne(ctx,
-		bson.M{"teamId": teamID},
+	// Churn-safe append: only push when this XUID is not already on the roster, so a concurrent commit
+	// (the host may re-fire 182 during a retry storm) cannot create a duplicate roster entry.
+	res, err := r.squads.UpdateOne(ctx,
+		bson.M{"teamId": teamID, "members.xuid": bson.M{"$ne": xuid}},
 		bson.M{"$push": bson.M{"members": member}},
-	); err != nil {
+	)
+	if err != nil {
 		return 0, "", err
+	}
+	if res.MatchedCount == 0 {
+		// The XUID was added concurrently (or the squad vanished between read and write); return the
+		// existing membership idempotently rather than failing the join.
+		if sq2, err := r.SquadByTeamID(ctx, teamID); err == nil && sq2 != nil {
+			for _, m := range sq2.Members {
+				if m.XUID == xuid {
+					return '1', m.UserID, nil
+				}
+			}
+		}
+		return '0', "", nil
 	}
 	if _, err := r.profiles.UpdateOne(ctx,
 		bson.M{"xuid": xuid},
@@ -443,7 +512,7 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 // SetMemberNumber assigns a member's "hound number" (0..99, unique within the squad), returning the
 // status byte the client expects (parser sub_823BDA28): '1' Member Config Complete, '2' Already Been
 // Used By Other Users, '3' Target Member Not Exist.
-func (r *SquadRepository) SetMemberNumber(ctx context.Context, teamID, userID string, number byte) (byte, error) {
+func (r *SquadRepository) SetMemberNumber(ctx context.Context, teamID, xuid, userID string, number byte) (byte, error) {
 	sq, err := r.SquadByTeamID(ctx, teamID)
 	if err != nil {
 		return 0, err
@@ -452,22 +521,41 @@ func (r *SquadRepository) SetMemberNumber(ctx context.Context, teamID, userID st
 		return '3', nil // Target Member Not Exist
 	}
 
-	memberFound := false
-	for _, m := range sq.Members {
-		if m.UserID == userID {
-			memberFound = true
-			continue
+	// Resolve the acting member by XUID first (the reliable packet-header identity), falling back to the
+	// body User ID. 204 is a SELF-op (a member sets its OWN hound number), so the header XUID is the acting
+	// console; the body US can be the mis-adopted leader US, which would otherwise set the WRONG member's
+	// number. Same reliable-identity principle as AddMember / RemoveMember.
+	idx := -1
+	if xuid != "" {
+		for i, m := range sq.Members {
+			if m.XUID == xuid {
+				idx = i
+				break
+			}
 		}
-		if m.UserNumber == int32(number) {
+	}
+	if idx == -1 {
+		for i, m := range sq.Members {
+			if m.UserID == userID {
+				idx = i
+				break
+			}
+		}
+	}
+	if idx == -1 {
+		return '3', nil // Target Member Not Exist
+	}
+
+	// Collision: any OTHER member already holds this number (the acting member re-claiming its own is fine).
+	for i, m := range sq.Members {
+		if i != idx && m.UserNumber == int32(number) {
 			return '2', nil // Already Been Used By Other Users
 		}
 	}
-	if !memberFound {
-		return '3', nil
-	}
 
+	// Update by the matched member's STORED User ID -- never the passed-in userID, which may be the wrong US.
 	if _, err := r.squads.UpdateOne(ctx,
-		bson.M{"teamId": teamID, "members.userId": userID},
+		bson.M{"teamId": teamID, "members.userId": sq.Members[idx].UserID},
 		bson.M{"$set": bson.M{"members.$.userNumber": int32(number)}},
 	); err != nil {
 		return 0, err

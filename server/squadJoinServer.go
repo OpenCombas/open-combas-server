@@ -110,8 +110,28 @@ func (s *squadJoinServer) buildJoin(hi UserHelloMessage, packet []byte) SquadJoi
 		logging.Warn.Printf("[%s] add member failed, using static join: %v", s.serverConfig.Label, err)
 		return CreateSquadJoinState(hi.Xuid, hi.Order)
 	}
-	logging.Info.Printf("[%s] join %s (%s) -> squad %s: status %q userID %q", s.serverConfig.Label, gamertag, joinerXUID, teamID, status, userID)
-	return squadJoinState(hi.Xuid, hi.Order, status, userID)
+
+	// The 182 reply's User ID is copied VERBATIM by the client into its OWN myIdentity (parser
+	// sub_823BDAA0 -> squad-state block *(ctx+612)+2668, the SAME field the reg/181 parser fills with the
+	// console's own id). The HOST is the console that sends 182 to commit a joiner, so echoing the
+	// JOINER's freshly-assigned US here overwrites the host's own identity (US...0001 -> the joiner's
+	// US...0003): the host then fails its own leader check -- it can't disband, and its lobby session
+	// never merges with the joiner's. (Confirmed live 2026-07-07 via paired host/joiner gdb debug: 182
+	// clobbers host myIdentity; the joiner writes no identity at all -> both self-host -> two parallel
+	// sessions on the war oracle.) Echo the REQUESTER's OWN US instead -- whoever runs 182 re-writes
+	// their own identity (a no-op for the host) -- while AddMember above still commits the joiner and the
+	// joiner learns its assigned US from the roster delivered on 184 login. Falls back to the joiner US
+	// if the requester has no profile (never worse than the previous behaviour).
+	replyUserID := userID
+	if status == '1' {
+		if p, perr := s.repo.ProfileByXUID(readCtx, string(hi.Xuid[:])); perr != nil {
+			logging.Warn.Printf("[%s] join: could not resolve requester %s profile, echoing joiner US: %v", s.serverConfig.Label, string(hi.Xuid[:]), perr)
+		} else if p != nil && p.UserID != "" {
+			replyUserID = p.UserID
+		}
+	}
+	logging.Info.Printf("[%s] join %s (joiner %s) -> squad %s: status %q joinerUserID %q replyUserID(requester) %q", s.serverConfig.Label, gamertag, joinerXUID, teamID, status, userID, replyUserID)
+	return squadJoinState(hi.Xuid, hi.Order, status, replyUserID)
 }
 
 func NewSquadJoinServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *SquadRepository) *squadJoinServer {
