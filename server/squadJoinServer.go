@@ -111,27 +111,20 @@ func (s *squadJoinServer) buildJoin(hi UserHelloMessage, packet []byte) SquadJoi
 		return CreateSquadJoinState(hi.Xuid, hi.Order)
 	}
 
-	// The 182 reply's User ID is copied VERBATIM by the client into its OWN myIdentity (parser
-	// sub_823BDAA0 -> squad-state block *(ctx+612)+2668, the SAME field the reg/181 parser fills with the
-	// console's own id). The HOST is the console that sends 182 to commit a joiner, so echoing the
-	// JOINER's freshly-assigned US here overwrites the host's own identity (US...0001 -> the joiner's
-	// US...0003): the host then fails its own leader check -- it can't disband, and its lobby session
-	// never merges with the joiner's. (Confirmed live 2026-07-07 via paired host/joiner gdb debug: 182
-	// clobbers host myIdentity; the joiner writes no identity at all -> both self-host -> two parallel
-	// sessions on the war oracle.) Echo the REQUESTER's OWN US instead -- whoever runs 182 re-writes
-	// their own identity (a no-op for the host) -- while AddMember above still commits the joiner and the
-	// joiner learns its assigned US from the roster delivered on 184 login. Falls back to the joiner US
-	// if the requester has no profile (never worse than the previous behaviour).
-	replyUserID := userID
-	if status == '1' {
-		if p, perr := s.repo.ProfileByXUID(readCtx, string(hi.Xuid[:])); perr != nil {
-			logging.Warn.Printf("[%s] join: could not resolve requester %s profile, echoing joiner US: %v", s.serverConfig.Label, string(hi.Xuid[:]), perr)
-		} else if p != nil && p.UserID != "" {
-			replyUserID = p.UserID
-		}
-	}
-	logging.Info.Printf("[%s] join %s (joiner %s) -> squad %s: status %q joinerUserID %q replyUserID(requester) %q", s.serverConfig.Label, gamertag, joinerXUID, teamID, status, userID, replyUserID)
-	return squadJoinState(hi.Xuid, hi.Order, status, replyUserID)
+	// Return the JOINER's freshly-assigned User ID -- the title contract. The host copies the 182 reply US
+	// into its own myIdentity (+2668) AND uses that same +2668 as the source for the joiner's US slot in the
+	// P2P 0x400B squad-data packet it sends the joiner (US@+0x3C), so the joiner adopts whatever US we return
+	// here. Returning the joiner's US therefore delivers the joiner its OWN US end-to-end.
+	//
+	// [Fix #1 reverted 2026-07-08.] Fix #1 echoed the REQUESTER's (host's) US here to avoid the 182 reply
+	// "clobbering" the host's myIdentity, but the RE session traced +2668's lifetime and showed that clobber
+	// is HARMLESS: the host's leader/lobby identity reads profile.US / SquadState+56 (set at login), and the
+	// +2668->profile mirror (sub_8234C8C8) only fires at reg/login (mgr[189]==3), never during a join
+	// (mgr[189]==5). So fix #1 fixed nothing on the host and instead made the host emit US...0001 in 0x400B,
+	// causing the joiner to adopt the leader's US. "Host can't disband" has a separate root (suspect the
+	// login roster UserName=rec.Name). See xex_re.md "INTERPRETATION".
+	logging.Info.Printf("[%s] join %s (joiner %s) -> squad %s: status %q userID %q", s.serverConfig.Label, gamertag, joinerXUID, teamID, status, userID)
+	return squadJoinState(hi.Xuid, hi.Order, status, userID)
 }
 
 func NewSquadJoinServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *SquadRepository) *squadJoinServer {
