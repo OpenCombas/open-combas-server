@@ -222,3 +222,51 @@ func TestCreditNationDonationLive(t *testing.T) {
 		t.Errorf("dead B totalIncome changed: %d -> %d", beforeB, got)
 	}
 }
+
+// TestEventsAndAreaCountsLive covers the world-event log ordering and per-nation area control against real
+// Mongo. Skipped without MONGO_TEST_URI.
+func TestEventsAndAreaCountsLive(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("set MONGO_TEST_URI to run the live events/area-counts test")
+	}
+	ctx := context.Background()
+
+	store, err := persistence.Connect(ctx, uri, "combas_test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer store.Close(ctx)
+
+	repo := NewWorldRepository(store)
+	_ = repo.events.Drop(ctx)
+	_ = repo.battlefields.Drop(ctx)
+	t.Cleanup(func() { _ = repo.events.Drop(ctx); _ = repo.battlefields.Drop(ctx) })
+
+	// RecentEvents returns newest-first by createdAt.
+	_ = repo.RecordEvent(ctx, EventRecord{CreatedAt: 100, TemplateID: 1})
+	_ = repo.RecordEvent(ctx, EventRecord{CreatedAt: 300, TemplateID: 3})
+	_ = repo.RecordEvent(ctx, EventRecord{CreatedAt: 200, TemplateID: 2})
+	evs, err := repo.RecentEvents(ctx, 10)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	if len(evs) != 3 || evs[0].TemplateID != 3 || evs[1].TemplateID != 2 || evs[2].TemplateID != 1 {
+		t.Errorf("RecentEvents order = %+v, want templates 3,2,1", evs)
+	}
+
+	// NationAreaCounts: area 1 fully A, area 2 fully B -> A:1 B:1 C:0.
+	if _, err := repo.battlefields.InsertMany(ctx, []any{
+		Battlefield{AreaID: 1, MapID: 1, Capacity: 100, StrategicValue: 1, OccA: 100},
+		Battlefield{AreaID: 2, MapID: 1, Capacity: 100, StrategicValue: 1, OccB: 100},
+	}); err != nil {
+		t.Fatalf("seed battlefields: %v", err)
+	}
+	counts, err := repo.NationAreaCounts(ctx)
+	if err != nil {
+		t.Fatalf("NationAreaCounts: %v", err)
+	}
+	if counts['A'] != 1 || counts['B'] != 1 || counts['C'] != 0 {
+		t.Errorf("area counts = %v, want A:1 B:1 C:0", counts)
+	}
+}

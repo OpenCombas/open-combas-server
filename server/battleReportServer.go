@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -116,8 +117,13 @@ func (s *battleReportServer) ingest(packet []byte) {
 	defer cancel()
 
 	if s.worldRepo != nil {
+		// Snapshot per-nation area control just before the update so we can detect an elimination
+		// (loser drops from >0 controlled areas to 0) caused by this battle.
+		before, _ := s.worldRepo.NationAreaCounts(ctx)
 		if err := s.worldRepo.ApplyBattleOccupation(ctx, res.AreaID, res.MapID, res.WinnerNation, res.LoserNation, res.OccDelta); err != nil {
 			logging.Warn.Printf("[%s] occupation update failed: %v", s.serverConfig.Label, err)
+		} else {
+			s.maybeRecordConquest(ctx, res, before)
 		}
 	}
 	if s.squadRepo != nil {
@@ -127,6 +133,49 @@ func (s *battleReportServer) ingest(packet []byte) {
 	}
 	logging.Info.Printf("[%s] area %d/%d: winner %c/%s (+%d occ, +%d renown) vs %c/%s",
 		s.serverConfig.Label, res.AreaID, res.MapID, res.WinnerNation, res.WinnerTeam, res.OccDelta, res.WinnerMerit, res.LoserNation, res.LoserTeam)
+}
+
+// dissolutionTemplate maps an eliminated nation to its known "Nation Dissolved" WORLD_NEWS template.
+// LIMITATION: each template hardcodes the CONQUEROR in its fixed client text (t3 Tarakia->Morskovian,
+// t1 Morskoj->Tarakian, t2 SalKar->Tarakian), so the winner rendered may not match the actual conqueror
+// until the other loser/winner-pairing templates are recovered. Returns false for an unknown nation.
+func dissolutionTemplate(loser byte) (int32, bool) {
+	switch loser {
+	case 'A':
+		return 3, true // Xeres / Tarakia falls
+	case 'B':
+		return 1, true // Ostrov / Morskoj falls
+	case 'C':
+		return 2, true // Qara / Sal Kar falls
+	}
+	return 0, false
+}
+
+// maybeRecordConquest emits a nation-dissolved world event when this battle eliminated the losing nation
+// (its controlled-area count went from >0 to 0). before is the per-nation area count captured just before
+// the occupation update; a nil before or a failed post-count skips detection rather than blocking the ack.
+func (s *battleReportServer) maybeRecordConquest(ctx context.Context, res BattleResult, before map[byte]int) {
+	if before == nil {
+		return
+	}
+	after, err := s.worldRepo.NationAreaCounts(ctx)
+	if err != nil {
+		logging.Warn.Printf("[%s] post-battle area count failed: %v", s.serverConfig.Label, err)
+		return
+	}
+	if before[res.LoserNation] == 0 || after[res.LoserNation] != 0 {
+		return // not a fresh elimination
+	}
+	tid, ok := dissolutionTemplate(res.LoserNation)
+	if !ok {
+		return
+	}
+	ev := EventRecord{CreatedAt: time.Now().Unix(), TemplateID: tid, EntityID: int32(res.LoserNation), Text: ""}
+	if err := s.worldRepo.RecordEvent(ctx, ev); err != nil {
+		logging.Warn.Printf("[%s] record dissolution event failed: %v", s.serverConfig.Label, err)
+		return
+	}
+	logging.Info.Printf("[%s] EVENT: nation %c eliminated by %c -> news template %d", s.serverConfig.Label, res.LoserNation, res.WinnerNation, tid)
 }
 
 func NewBattleReportServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, squadRepo *SquadRepository, worldRepo *WorldRepository) *battleReportServer {

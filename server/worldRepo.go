@@ -26,8 +26,20 @@ import (
 const (
 	battlefieldsCollection = "battlefields"
 	nationsCollection      = "nations"
+	eventsCollection       = "events"
 	worldReadTimeout       = 3 * time.Second
 )
+
+// EventRecord is one world event, stored in the `events` collection and rendered as a WORLD_NEWS item
+// (worldNewsServer). It is created when the war state transitions (e.g. a nation is eliminated). The
+// client composes the whole headline from TemplateID alone; EntityID is cosmetic (the header's middle
+// number) and Text is a placeholder insert only for templates that have one. See the NewsEntry doc.
+type EventRecord struct {
+	CreatedAt  int64  `bson:"createdAt"`  // Unix seconds; drives news ordering (newest first) + the header date
+	TemplateID int32  `bson:"templateId"` // MenuText_Eng.fmg story id (1 Ostrov / 2 Qara / 3 Xeres dissolution, ...)
+	EntityID   int32  `bson:"entityId"`   // header middle-number (cosmetic; NOT a nation)
+	Text       string `bson:"text"`       // free-text insert for placeholder templates ("" for dissolutions)
+}
 
 // Battlefield is the stored occupation state for one battlefield within an area.
 type Battlefield struct {
@@ -66,13 +78,55 @@ type NationRecord struct {
 type WorldRepository struct {
 	battlefields *mongo.Collection
 	nations      *mongo.Collection
+	events       *mongo.Collection
 }
 
 func NewWorldRepository(store *persistence.Store) *WorldRepository {
 	return &WorldRepository{
 		battlefields: store.Collection(battlefieldsCollection),
 		nations:      store.Collection(nationsCollection),
+		events:       store.Collection(eventsCollection),
 	}
+}
+
+// RecordEvent appends one world event (rendered later as a WORLD_NEWS item).
+func (r *WorldRepository) RecordEvent(ctx context.Context, ev EventRecord) error {
+	_, err := r.events.InsertOne(ctx, ev)
+	return err
+}
+
+// RecentEvents returns up to limit world events, newest first (by createdAt, then insertion order).
+func (r *WorldRepository) RecentEvents(ctx context.Context, limit int) ([]EventRecord, error) {
+	cur, err := r.events.Find(ctx, bson.M{},
+		options.Find().
+			SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).
+			SetLimit(int64(limit)))
+	if err != nil {
+		return nil, err
+	}
+	var out []EventRecord
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// NationAreaCounts returns how many areas each nation currently controls, keyed by nation char 'A'/'B'/'C'.
+// An area is controlled by the nation that leads the most of its battlefields (see areaSummaryFrom).
+func (r *WorldRepository) NationAreaCounts(ctx context.Context) (map[byte]int, error) {
+	grouped, err := r.BattlefieldsGrouped(ctx)
+	if err != nil {
+		return nil, err
+	}
+	counts := map[byte]int{'A': 0, 'B': 0, 'C': 0}
+	for _, bfs := range grouped {
+		if len(bfs) == 0 {
+			continue
+		}
+		owner, _, _, _ := areaSummaryFrom(bfs)
+		counts[owner]++
+	}
+	return counts, nil
 }
 
 // EnsureSchema creates the indexes and seeds the nations collection from the static model if empty.

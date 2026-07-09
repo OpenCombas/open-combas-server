@@ -20,6 +20,7 @@ import (
 
 const (
 	battlefieldsCollection = "battlefields"
+	eventsCollection       = "events"
 
 	// defaultCapturePoints is the occupation-pool capacity used for a battlefield whose real capture
 	// points aren't known yet (known_occ_points lists a 0 for those).
@@ -213,6 +214,14 @@ func BattlefieldReset(ctx context.Context, store *persistence.Store, downscale i
 	for i, d := range docs {
 		anyDocs[i] = d
 	}
-	_, err := coll.InsertMany(ctx, anyDocs)
-	return err
+	if _, err := coll.InsertMany(ctx, anyDocs); err != nil {
+		return err
+	}
+
+	// A reset is a new season: clear the accumulated world-event / news feed so stale "nation dissolved"
+	// stories from the previous war don't carry over.
+	if _, err := store.Collection(eventsCollection).DeleteMany(ctx, bson.M{}); err != nil {
+		return err
+	}
+	return nil
 }

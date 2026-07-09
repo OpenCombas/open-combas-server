@@ -3,9 +3,11 @@ package server
 import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
+	"ChromehoundsStatusServer/logging"
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -20,12 +22,19 @@ import (
 // records each, every record 76 bytes in wire format "S1,C66,S1,C5", records starting at
 // block_base+24. Total body = 2 * (24-byte block header + 10*76) = 1568 bytes. See SERVER_ANALYSIS.md §6.
 //
-// Headlines are composed client-side: the headline-template id selects fragment strings from
-// MenuText_Eng.fmg (ids 14000-15xxx, e.g. 14000 "Xeres Falls, Nation Dissolved"), and an entity id
-// is resolved to a name via the WorldSituationInfoNews*Param.bin tables (Country id 74 -> Morskoj,
-// 73 -> Tarakia, 75 -> Sal Kar). The exact roles of the two S1 ids / C66 / C5 are a best-effort
-// mapping pending an in-game test; the placeholder data below is chosen to make each field's effect
-// visible on the news board.
+// Headlines are composed ENTIRELY client-side: the TemplateID selects a whole fixed story (headline +
+// body, WITH the capital + both nation names baked into it) from MenuText_Eng.fmg. CONFIRMED in-game
+// (logs/events_and_news screenshots, 2026-07-09) -- the three "Nation Dissolved" stories are:
+//   template 3 (fmg 14000) "Xeres Falls"  -> "Xeres, capital of Tarakia has fallen to Morskovian forces..."
+//   template 1 (fmg 14001) "Ostrov Falls" -> "Ostrov, capital of Morskoj has fallen to Tarakian forces..."
+//   template 2 (fmg 14002) "Qara Falls"   -> "Qara, capital of Sal Kar, has fallen to Tarakian forces..."
+// So the "<X> has fallen to <Y>" wording is fixed template text -- the server does NOT choose the nations,
+// only the TemplateID. EntityID is NOT a nation: it renders as the middle number of the header
+// "<Code0>/<Code1>/<EntityID> <Code2>:<Code3>" (e.g. our EntityID 75 shows as "06/28/75"). Text is
+// unused by these no-placeholder templates. See the NewsEntry field doc below.
+// NOTE: these are END-GAME nation-elimination stories; CreateNewsState currently emits all three
+// UNCONDITIONALLY (static placeholders), so the board shows "capital fallen / nation dissolved" even
+// though the war map still has every nation alive (Xeres shown 100% Tarakia). Make it state-driven to fix.
 
 // NewsEntry is one news item (76 bytes). Wire format "S1,C66,S1,C5". Field roles confirmed in-game:
 //   - TemplateID selects the whole story (title + body) from WorldSituationInfoNewsParam.bin, which
@@ -86,27 +95,67 @@ func mkNewsEntry(templateID int16, text string, entityID int16, code [5]byte) Ne
 	return e
 }
 
-func CreateNewsState(xuid [16]byte, order [8]byte) NewsState {
+// emptyNewsState is a well-formed reply with no stories: block 0 has status 0 but a zero record count,
+// which the news manager accepts but renders as an empty board (no more static "nation dissolved" fakes).
+func emptyNewsState(xuid [16]byte, order [8]byte) NewsState {
+	return NewsState{Header: CreateHeader(xuid, order)}
+}
+
+// newsEntryFromEvent renders a stored world event as a wire news item: the client composes the whole
+// headline from TemplateID; the header date is derived from the event's timestamp (UTC), EntityID is the
+// header's middle number, and Text is the placeholder insert (empty for the dissolution templates).
+func newsEntryFromEvent(ev EventRecord) NewsEntry {
+	t := time.Unix(ev.CreatedAt, 0).UTC()
+	code := date(byte(int(t.Month())), byte(t.Day()), byte(t.Hour()), byte(t.Minute()))
+	return mkNewsEntry(int16(ev.TemplateID), ev.Text, int16(ev.EntityID), code)
+}
+
+// newsFromEvents packs up to 20 events (newest first) into the reply's two 10-slot blocks.
+func newsFromEvents(xuid [16]byte, order [8]byte, evs []EventRecord) NewsState {
 	s := NewsState{Header: CreateHeader(xuid, order)}
-
-	// The three "nation dissolved" stories, one per nation capital, with raw date/time bytes so the
-	// header reads e.g. "6/28/74 12:30". setEntries also sets the block status (0) and the record
-	// count header byte the news manager requires to accept the reply. Block 1 is left empty.
-	s.Blocks[0].setEntries(
-		mkNewsEntry(1, "", 74, date(6, 28, 12, 30)), // Ostrov Falls; entity 74 = Morskoj
-		mkNewsEntry(2, "", 73, date(6, 28, 12, 31)), // Qara Falls;   entity 73 = Tarakia
-		mkNewsEntry(3, "", 75, date(6, 28, 12, 32)), // Xeres Falls;  entity 75 = Sal Kar
-	)
-
+	entries := make([]NewsEntry, 0, len(evs))
+	for _, ev := range evs {
+		entries = append(entries, newsEntryFromEvent(ev))
+	}
+	if len(entries) > 20 {
+		entries = entries[:20]
+	}
+	if len(entries) > 0 {
+		hi := entries
+		if len(hi) > 10 {
+			hi = hi[:10]
+		}
+		s.Blocks[0].setEntries(hi...)
+	}
+	if len(entries) > 10 {
+		s.Blocks[1].setEntries(entries[10:]...)
+	}
 	return s
 }
 
 type worldNewsServer struct {
 	*messageServer
+	repo *WorldRepository // nil when Mongo is disabled -> empty news (never the old static fakes)
 }
 
-func NewWorldNewsServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *worldNewsServer {
-	s := &worldNewsServer{}
+// buildNews serves the news feed from the events collection, newest first. With no repository (Mongo off)
+// or on a read error it returns an empty board rather than fabricated stories.
+func (s *worldNewsServer) buildNews(hi UserHelloMessage) NewsState {
+	if s.repo == nil {
+		return emptyNewsState(hi.Xuid, hi.Order)
+	}
+	readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+	defer cancel()
+	evs, err := s.repo.RecentEvents(readCtx, 20)
+	if err != nil {
+		logging.Warn.Printf("[%s] events read failed, empty news: %v", s.serverConfig.Label, err)
+		return emptyNewsState(hi.Xuid, hi.Order)
+	}
+	return newsFromEvents(hi.Xuid, hi.Order, evs)
+}
+
+func NewWorldNewsServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *WorldRepository) *worldNewsServer {
+	s := &worldNewsServer{repo: repo}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -122,7 +171,7 @@ func NewWorldNewsServer(listenAddress net.IP, serverConfig config.ServerConfig, 
 			return validateWorldPacket(packet, clientAddr, serverConfig.Label)
 		},
 		buildPayload: func(hi UserHelloMessage) interface{} {
-			return CreateNewsState(hi.Xuid, hi.Order)
+			return s.buildNews(hi)
 		},
 		responseSize: constants.NewsResponseSize,
 	}
