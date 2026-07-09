@@ -177,6 +177,100 @@ func (r *WorldRepository) BattlefieldsGrouped(ctx context.Context) (map[byte][]B
 	return grouped, nil
 }
 
+// CreditNationDonation applies one world-screen donation to a nation's totalIncome ("Total Revenue"),
+// returning the status byte the client expects (parser sub_823BDFB0):
+//   '1' Complete       - credited
+//   '2' Country is Dead - target nation eliminated (no credit)
+//   '3' Acceptance end  - unknown nation / not accepting (no credit)
+// The credit is clamped to the int32 ceiling of the wire field so repeated donations can't wrap it
+// negative. The write is guarded on deadFlag == 0 so a nation that dies between the read and the write
+// is not credited.
+func (r *WorldRepository) CreditNationDonation(ctx context.Context, nation byte, amount int32) (byte, error) {
+	code := string(nation)
+
+	var rec NationRecord
+	err := r.nations.FindOne(ctx, bson.M{"countryCode": code}).Decode(&rec)
+	if err == mongo.ErrNoDocuments {
+		return '3', nil // unknown nation -> not accepting
+	}
+	if err != nil {
+		return 0, err
+	}
+	if rec.DeadFlag != 0 {
+		return '2', nil // Country is Dead
+	}
+
+	res, err := r.nations.UpdateOne(ctx,
+		bson.M{"countryCode": code, "deadFlag": int32(0)},
+		mongo.Pipeline{{{Key: "$set", Value: bson.M{
+			"totalIncome": bson.M{"$min": bson.A{
+				bson.M{"$add": bson.A{"$totalIncome", amount}},
+				int32(2147483647), // int32 ceiling of the wire NationData.TotalIncome field
+			}},
+		}}}},
+	)
+	if err != nil {
+		return 0, err
+	}
+	if res.MatchedCount == 0 {
+		return '2', nil // raced a nation death between the read and the guarded write
+	}
+	return '1', nil
+}
+
+// worldTotalAreas is the number of map areas the client divides by to render a nation's Control %
+// (NumberOfAreas / worldTotalAreas -- e.g. 5/22 = 22.7%). See worldData.go (22 areas, ids 1..22).
+const worldTotalAreas = 22
+
+// controlAreasFromBattlefields maps live battlefield occupation onto each nation's Control-% field
+// (NationData.NumberOfAreas), so the rendered Control % is that nation's share of the map's TOTAL
+// occupation points rather than a static placeholder. Each battlefield contributes its StrategicValue
+// (the "occupation points" / orange dots) to a nation in proportion to that nation's occupation of the
+// battlefield (OccX / Capacity; OccA+OccB+OccC == Capacity). The resulting point-share is scaled onto
+// the client's /worldTotalAreas denominator. Pure so it can be unit-tested without Mongo.
+func controlAreasFromBattlefields(bfs []Battlefield) (a, b, c byte) {
+	var ptsA, ptsB, ptsC, total float64
+	for _, bf := range bfs {
+		if bf.Capacity <= 0 || bf.StrategicValue <= 0 {
+			continue // no capacity / no occupation points to attribute
+		}
+		sv := float64(bf.StrategicValue)
+		total += sv
+		ptsA += sv * float64(bf.OccA) / float64(bf.Capacity)
+		ptsB += sv * float64(bf.OccB) / float64(bf.Capacity)
+		ptsC += sv * float64(bf.OccC) / float64(bf.Capacity)
+	}
+	if total == 0 {
+		return 0, 0, 0
+	}
+	toAreas := func(p float64) byte {
+		v := int(p/total*worldTotalAreas + 0.5) // share -> nearest area unit on the /22 scale
+		if v < 0 {
+			v = 0
+		}
+		if v > worldTotalAreas {
+			v = worldTotalAreas
+		}
+		return byte(v)
+	}
+	return toAreas(ptsA), toAreas(ptsB), toAreas(ptsC)
+}
+
+// NationControlAreas reads every battlefield and returns the per-nation Control-% field (NumberOfAreas)
+// for A, B, C derived from live occupation. See controlAreasFromBattlefields.
+func (r *WorldRepository) NationControlAreas(ctx context.Context) (byte, byte, byte, error) {
+	cur, err := r.battlefields.Find(ctx, bson.M{})
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	var bfs []Battlefield
+	if err := cur.All(ctx, &bfs); err != nil {
+		return 0, 0, 0, err
+	}
+	a, b, c := controlAreasFromBattlefields(bfs)
+	return a, b, c, nil
+}
+
 // Nations returns the three faction records ordered A, B, C.
 func (r *WorldRepository) Nations(ctx context.Context) ([]NationRecord, error) {
 	cur, err := r.nations.Find(ctx, bson.M{},

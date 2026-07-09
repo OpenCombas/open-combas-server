@@ -31,7 +31,9 @@ type NationData struct {
 	_                 [3]byte // align
 	TotalIncome       int32   // off 4  - "Total Revenue"
 	FixedIncome       int32   // off 8  - (not shown on faction screen; economic input)
-	NumberOfAreas     byte    // off 12 - drives "Control %" (= areas / total areas, ~22 total)
+	NumberOfAreas     byte    // off 12 - client renders "Control %" as this / total areas (~22). We now
+	//                          populate it with the nation's share of the map's total occupation points
+	//                          (StrategicValue-weighted, scaled onto /22) -- see controlAreasFromBattlefields.
 	_                 [3]byte // align
 	Field16           float32 // off 16 - float, purpose TBD (not on faction screen; was 0.00)
 	ExchangeRate      int32   // off 20 - "Exchange Rate" (¥)
@@ -143,6 +145,23 @@ func (s *worldServer) buildWorld(hi UserHelloMessage) WorldState {
 			var nations [3]NationData
 			for i, r := range recs {
 				nations[i] = r.toNationData()
+			}
+			// Control % (NumberOfAreas) = each nation's share of the map's total occupation points,
+			// derived live from battlefield occupation. Falls back to the stored NumberOfAreas if the
+			// derivation can't run, so a battlefield-read hiccup never drops the world reply.
+			if ca, cb, cc, err := s.repo.NationControlAreas(readCtx); err != nil {
+				logging.Warn.Printf("[%s] control-share derive failed, keeping stored NumberOfAreas: %v", s.serverConfig.Label, err)
+			} else {
+				for i := range nations {
+					switch nations[i].CountryCode {
+					case 'A':
+						nations[i].NumberOfAreas = ca
+					case 'B':
+						nations[i].NumberOfAreas = cb
+					case 'C':
+						nations[i].NumberOfAreas = cc
+					}
+				}
 			}
 			return newWorldState(hi.Xuid, hi.Order, nations)
 		}

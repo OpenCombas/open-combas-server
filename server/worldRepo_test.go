@@ -128,3 +128,97 @@ func TestRepositorySeedAndReadLive(t *testing.T) {
 		t.Fatalf("Nations len = %d, want 3", len(nations))
 	}
 }
+
+func TestControlAreasFromBattlefields(t *testing.T) {
+	// Two battlefields: bf1 (4 occupation points) fully held by A; bf2 (1 point) fully held by B.
+	// Total points = 5 -> A = 4/5 = 80% -> round(0.8*22)=18 ; B = 1/5 = 20% -> round(0.2*22)=4 ; C = 0.
+	bfs := []Battlefield{
+		{Capacity: 100, StrategicValue: 4, OccA: 100, OccB: 0, OccC: 0},
+		{Capacity: 100, StrategicValue: 1, OccA: 0, OccB: 100, OccC: 0},
+	}
+	a, b, c := controlAreasFromBattlefields(bfs)
+	if a != 18 || b != 4 || c != 0 {
+		t.Errorf("control areas = (%d,%d,%d), want (18,4,0)", a, b, c)
+	}
+
+	// A battlefield split 60/40 (A/C) worth 2 points, plus a zero-capacity battlefield that must be
+	// skipped without dividing by zero.
+	bfs2 := []Battlefield{
+		{Capacity: 100, StrategicValue: 2, OccA: 60, OccB: 0, OccC: 40},
+		{Capacity: 0, StrategicValue: 9, OccA: 5, OccB: 5, OccC: 5}, // skipped (no capacity)
+	}
+	a2, b2, c2 := controlAreasFromBattlefields(bfs2)
+	// A = 60% -> round(0.6*22)=13 ; C = 40% -> round(0.4*22)=9 ; B = 0.
+	if a2 != 13 || b2 != 0 || c2 != 9 {
+		t.Errorf("control areas (split) = (%d,%d,%d), want (13,0,9)", a2, b2, c2)
+	}
+
+	// No occupation points anywhere -> all zero, no panic.
+	if a3, b3, c3 := controlAreasFromBattlefields(nil); a3 != 0 || b3 != 0 || c3 != 0 {
+		t.Errorf("empty = (%d,%d,%d), want (0,0,0)", a3, b3, c3)
+	}
+}
+
+// TestCreditNationDonationLive covers the donation credit (+status bytes) against real Mongo. Skipped
+// without MONGO_TEST_URI.
+func TestCreditNationDonationLive(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("set MONGO_TEST_URI to run the live donation-credit test")
+	}
+	ctx := context.Background()
+
+	store, err := persistence.Connect(ctx, uri, "combas_test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer store.Close(ctx)
+
+	repo := NewWorldRepository(store)
+	_ = repo.nations.Drop(ctx)
+	t.Cleanup(func() { _ = repo.nations.Drop(ctx) })
+	if err := repo.EnsureSchema(ctx); err != nil { // seeds nations A/B/C
+		t.Fatalf("EnsureSchema: %v", err)
+	}
+
+	incomeOf := func(code byte) int32 {
+		recs, err := repo.Nations(ctx)
+		if err != nil {
+			t.Fatalf("Nations: %v", err)
+		}
+		for _, r := range recs {
+			if len(r.CountryCode) > 0 && r.CountryCode[0] == code {
+				return r.TotalIncome
+			}
+		}
+		t.Fatalf("nation %q not found", string(code))
+		return 0
+	}
+
+	before := incomeOf('A')
+	if st, err := repo.CreditNationDonation(ctx, 'A', 10_000_000); err != nil || st != '1' {
+		t.Fatalf("credit A = (%q,%v), want ('1',nil)", string(st), err)
+	}
+	if got := incomeOf('A'); got != before+10_000_000 {
+		t.Errorf("A totalIncome = %d, want %d", got, before+10_000_000)
+	}
+
+	// Unknown nation -> '3', no side effects.
+	if st, _ := repo.CreditNationDonation(ctx, 'Z', 10_000_000); st != '3' {
+		t.Errorf("credit unknown = %q, want '3'", string(st))
+	}
+
+	// A dead nation -> '2' and no credit.
+	if _, err := repo.nations.UpdateOne(ctx,
+		map[string]any{"countryCode": "B"},
+		map[string]any{"$set": map[string]any{"deadFlag": int32(1)}}); err != nil {
+		t.Fatalf("kill B: %v", err)
+	}
+	beforeB := incomeOf('B')
+	if st, _ := repo.CreditNationDonation(ctx, 'B', 10_000_000); st != '2' {
+		t.Errorf("credit dead B = %q, want '2'", string(st))
+	}
+	if got := incomeOf('B'); got != beforeB {
+		t.Errorf("dead B totalIncome changed: %d -> %d", beforeB, got)
+	}
+}
