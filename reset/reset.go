@@ -155,14 +155,26 @@ func areaDots(area, count int32) []int32 {
 
 // seedBattlefields builds the full reset layout: every battlefield in every area, 100% occupied by the
 // area's default nation, with capacity == its capture points (or the 25000 default).
-func seedBattlefields() []battlefield {
+//
+// downscale divides every battlefield's starting capture points (capacity, and the default-nation
+// occupation that fills it) so the overall war scale can be matched to the playerbase size -- e.g.
+// downscale 20 turns a 25000-point battlefield into 1250, so a smaller playerbase can still flip areas.
+// A downscale < 1 is treated as 1 (no change); capacity is floored at 1 so a battlefield never becomes
+// an uncapturable / zero-capacity pool.
+func seedBattlefields(downscale int32) []battlefield {
+	if downscale < 1 {
+		downscale = 1
+	}
 	var out []battlefield
 	for area := int32(1); int(area) < len(areaBattlefieldCount); area++ {
 		count := int32(areaBattlefieldCount[area])
 		nation := areaDefaultNation[area]
 		dots := areaDots(area, count)
 		for mapID := int32(1); mapID <= count; mapID++ {
-			cap := capacityFor(area, mapID)
+			cap := capacityFor(area, mapID) / downscale
+			if cap < 1 {
+				cap = 1
+			}
 			bf := battlefield{AreaID: area, MapID: mapID, Capacity: cap, StrategicValue: dots[mapID-1]}
 			switch nation {
 			case 0:
@@ -180,9 +192,10 @@ func seedBattlefields() []battlefield {
 
 // BattlefieldReset re-initializes the stored battlefield occupation to the canonical starting layout:
 // every area's maps at their default per-nation occupation (100% owned by the area's default nation) with
-// each battlefield's capacity set to its known capture points (or 25000). This is DESTRUCTIVE -- it
-// discards any war progression accumulated from post-mission (1214) battle reports.
-func BattlefieldReset(ctx context.Context, store *persistence.Store) error {
+// each battlefield's capacity set to its known capture points (or 25000), divided by downscale (see
+// seedBattlefields). This is DESTRUCTIVE -- it discards any war progression accumulated from post-mission
+// (1214) battle reports.
+func BattlefieldReset(ctx context.Context, store *persistence.Store, downscale int32) error {
 	coll := store.Collection(battlefieldsCollection)
 
 	if _, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
@@ -195,7 +208,7 @@ func BattlefieldReset(ctx context.Context, store *persistence.Store) error {
 		return err
 	}
 
-	docs := seedBattlefields()
+	docs := seedBattlefields(downscale)
 	anyDocs := make([]any, len(docs))
 	for i, d := range docs {
 		anyDocs[i] = d

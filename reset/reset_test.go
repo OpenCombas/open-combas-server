@@ -5,7 +5,7 @@ import "testing"
 // TestSeedBattlefields checks the reset layout invariants: one doc per (area,map), every battlefield 100%
 // owned by exactly its area's default nation, and capacity = known capture points (else 25000).
 func TestSeedBattlefields(t *testing.T) {
-	bfs := seedBattlefields()
+	bfs := seedBattlefields(1)
 
 	// Total = sum of per-area counts (80 across the 22 areas).
 	want := 0
@@ -59,9 +59,53 @@ func TestSeedBattlefields(t *testing.T) {
 	}
 }
 
+// TestSeedBattlefieldsDownscale verifies the downscale factor divides capture points (and the occupation
+// that fills them) while preserving the 100%-single-owner invariant and leaving strategic dots untouched.
+func TestSeedBattlefieldsDownscale(t *testing.T) {
+	base := seedBattlefields(1)
+	scaled := seedBattlefields(20)
+	if len(base) != len(scaled) {
+		t.Fatalf("downscale changed battlefield count: %d vs %d", len(base), len(scaled))
+	}
+	for i := range base {
+		b, s := base[i], scaled[i]
+		wantCap := b.Capacity / 20
+		if wantCap < 1 {
+			wantCap = 1
+		}
+		if s.Capacity != wantCap {
+			t.Errorf("area %d map %d capacity = %d, want %d (base %d / 20)", s.AreaID, s.MapID, s.Capacity, wantCap, b.Capacity)
+		}
+		// The owning nation still holds exactly 100% (== the downscaled capacity); others 0.
+		occ := []int32{s.OccA, s.OccB, s.OccC}
+		full := 0
+		for _, o := range occ {
+			switch o {
+			case s.Capacity:
+				full++
+			case 0:
+			default:
+				t.Errorf("area %d map %d partial occupation %d after downscale", s.AreaID, s.MapID, o)
+			}
+		}
+		if full != 1 {
+			t.Errorf("area %d map %d: %d nations at 100%% after downscale, want 1", s.AreaID, s.MapID, full)
+		}
+		// Strategic value (orange dots) is NOT downscaled.
+		if s.StrategicValue != b.StrategicValue {
+			t.Errorf("area %d map %d dots changed by downscale: %d -> %d", s.AreaID, s.MapID, b.StrategicValue, s.StrategicValue)
+		}
+	}
+
+	// downscale < 1 is treated as 1 (no change).
+	if got := seedBattlefields(0); got[0].Capacity != base[0].Capacity {
+		t.Errorf("downscale 0 changed capacity: %d vs %d", got[0].Capacity, base[0].Capacity)
+	}
+}
+
 // TestKnownAssignments spot-checks a few nation/capacity values against the source data.
 func TestKnownAssignments(t *testing.T) {
-	bfs := seedBattlefields()
+	bfs := seedBattlefields(1)
 	get := func(area, mapID int32) *battlefield {
 		for i := range bfs {
 			if bfs[i].AreaID == area && bfs[i].MapID == mapID {

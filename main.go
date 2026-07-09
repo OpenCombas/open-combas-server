@@ -118,6 +118,9 @@ func main() {
 			case config.WorldNews:
 				srv := server.NewWorldNewsServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
+			case config.WorldDonation:
+				srv := server.NewWorldDonationServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), worldRepo)
+				go srv.Run()
 			case config.SquadReg:
 				srv := server.NewSquadRegServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo)
 				go srv.Run()

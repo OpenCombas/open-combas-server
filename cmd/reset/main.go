@@ -22,7 +22,12 @@ import (
 
 func main() {
 	confirm := flag.Bool("confirm", false, "perform the destructive battlefield reset (required)")
+	downscale := flag.Int("downscale", 1, "divide starting capture points (battlefield capacity) by this factor to scale the war to the playerbase size (>=1; e.g. 20 -> a 25000-point battlefield starts at 1250)")
 	flag.Parse()
+
+	if *downscale < 1 {
+		logging.Error.Fatalf("[RESET] --downscale must be >= 1 (got %d)", *downscale)
+	}
 
 	cfg := config.LoadConfig()
 	if !cfg.Mongo.Enabled {
@@ -47,9 +52,9 @@ func main() {
 		_ = store.Close(closeCtx)
 	}()
 
-	logging.Info.Printf("[RESET] running battlefield reset on database %q...", cfg.Mongo.Database)
-	if err := reset.BattlefieldReset(ctx, store); err != nil {
+	logging.Info.Printf("[RESET] running battlefield reset on database %q (downscale %d)...", cfg.Mongo.Database, *downscale)
+	if err := reset.BattlefieldReset(ctx, store, int32(*downscale)); err != nil {
 		logging.Error.Fatalf("[RESET] battlefield reset failed: %v", err)
 	}
-	logging.Info.Printf("[RESET] battlefield reset complete")
+	logging.Info.Printf("[RESET] battlefield reset complete (downscale %d)", *downscale)
 }

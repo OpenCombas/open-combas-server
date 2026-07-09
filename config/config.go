@@ -69,6 +69,7 @@ const (
 	WorldAreaInfo  ServerType = "WorldAreaInfo"
 	WorldMapDetail ServerType = "WorldMapDetail"
 	WorldNews      ServerType = "WorldNews"
+	WorldDonation  ServerType = "WorldDonation"
 	SquadReg       ServerType = "SquadReg"
 	SquadJoin      ServerType = "SquadJoin"
 	SquadLogin     ServerType = "SquadLogin"
@@ -194,6 +195,12 @@ func generateDefaultConfig() Config {
 				Port:    1216,
 				Enabled: true,
 				Type:    Echoing,
+			},
+			{
+				Label:   "WORLD_DONATION",
+				Port:    1266,
+				Enabled: true,
+				Type:    WorldDonation,
 			},
 		},
 		StaticMessageServers: []StaticMessageServerConfig{
