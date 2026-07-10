@@ -27,18 +27,26 @@ const (
 	battlefieldsCollection = "battlefields"
 	nationsCollection      = "nations"
 	eventsCollection       = "events"
+	capturesCollection     = "captureContributions"
 	worldReadTimeout       = 3 * time.Second
 )
 
 // EventRecord is one world event, stored in the `events` collection and rendered as a WORLD_NEWS item
-// (worldNewsServer). It is created when the war state transitions (e.g. a nation is eliminated). The
-// client composes the whole headline from TemplateID alone; EntityID is cosmetic (the header's middle
-// number) and Text is a placeholder insert only for templates that have one. See the NewsEntry doc.
+// (worldNewsServer). Created when the war state transitions (e.g. a nation is eliminated).
+//
+// WIRE MODEL (reverse-engineered from WorldSituationInfoNewsParam.bin + RE news-render trace, 2026-07-10):
+// TemplateID is the PARAM ROW id (short@0) -- the client looks it up in the .bin to get {header text id,
+// 2 body text ids} and composes the whole story client-side (both nation names baked into the chosen row).
+// So row 3 = Xeres/Tarakia->Morskoj dissolution, row 75 = "War Breaks Out". The placeholder tokens in
+// those texts (|<letter><digit>=) read RAW STRINGS from the entry's 66-byte C66 field, which is TWO 33-byte
+// slots: DIGIT-1 tokens (|a1=/|A1=/|B1=/|c1=/|p1=) read slot1 (C66[0..32]); DIGIT-2 tokens (|s2=/|a2=)
+// read slot2 (C66[33..65]). Names must be PRE-RESOLVED server-side (see worldNames.go), not sent as ids.
+// The wire short@68 is only the header's cosmetic date number (we send 0). See worldNewsServer newsEntryFromEvent.
 type EventRecord struct {
 	CreatedAt  int64  `bson:"createdAt"`  // Unix seconds; drives news ordering (newest first) + the header date
-	TemplateID int32  `bson:"templateId"` // MenuText_Eng.fmg story id (1 Ostrov / 2 Qara / 3 Xeres dissolution, ...)
-	EntityID   int32  `bson:"entityId"`   // header middle-number (cosmetic; NOT a nation)
-	Text       string `bson:"text"`       // free-text insert for placeholder templates ("" for dissolutions)
+	TemplateID int32  `bson:"templateId"` // PARAM ROW id into WorldSituationInfoNewsParam.bin (NOT a raw text id)
+	Slot1      string `bson:"slot1"`      // C66[0..32]  -- digit-1 placeholder value (region/battlefield name, ...)
+	Slot2      string `bson:"slot2"`      // C66[33..65] -- digit-2 placeholder value (squad name, ...)
 }
 
 // Battlefield is the stored occupation state for one battlefield within an area.
@@ -79,6 +87,7 @@ type WorldRepository struct {
 	battlefields *mongo.Collection
 	nations      *mongo.Collection
 	events       *mongo.Collection
+	captures     *mongo.Collection
 }
 
 func NewWorldRepository(store *persistence.Store) *WorldRepository {
@@ -86,7 +95,91 @@ func NewWorldRepository(store *persistence.Store) *WorldRepository {
 		battlefields: store.Collection(battlefieldsCollection),
 		nations:      store.Collection(nationsCollection),
 		events:       store.Collection(eventsCollection),
+		captures:     store.Collection(capturesCollection),
 	}
+}
+
+// captureContribution accumulates one squad's capture points on one battlefield. It backs the |s2=
+// "most-involved squad" placeholder in region/battlefield capture news events.
+type captureContribution struct {
+	AreaID int32  `bson:"areaId"`
+	MapID  int32  `bson:"mapId"`
+	Squad  string `bson:"squad"`
+	Points int64  `bson:"points"`
+}
+
+// CreditCapture adds a squad's capture points (== battle OccDelta) on a battlefield. No-op for an empty
+// squad or non-positive points.
+func (r *WorldRepository) CreditCapture(ctx context.Context, areaID, mapID int32, squad string, points int32) error {
+	if squad == "" || points <= 0 {
+		return nil
+	}
+	_, err := r.captures.UpdateOne(ctx,
+		bson.M{"areaId": areaID, "mapId": mapID, "squad": squad},
+		bson.M{"$inc": bson.M{"points": int64(points)}},
+		options.UpdateOne().SetUpsert(true))
+	return err
+}
+
+// TopSquadForBattlefield returns the squad with the most accumulated capture points on a battlefield
+// (empty string if none).
+func (r *WorldRepository) TopSquadForBattlefield(ctx context.Context, areaID, mapID int32) (string, error) {
+	var c captureContribution
+	err := r.captures.FindOne(ctx,
+		bson.M{"areaId": areaID, "mapId": mapID},
+		options.FindOne().SetSort(bson.D{{Key: "points", Value: -1}})).Decode(&c)
+	if err == mongo.ErrNoDocuments {
+		return "", nil
+	}
+	return c.Squad, err
+}
+
+// TopSquadForRegion returns the squad with the most capture points summed across an area's battlefields.
+func (r *WorldRepository) TopSquadForRegion(ctx context.Context, areaID int32) (string, error) {
+	cur, err := r.captures.Find(ctx, bson.M{"areaId": areaID})
+	if err != nil {
+		return "", err
+	}
+	var docs []captureContribution
+	if err := cur.All(ctx, &docs); err != nil {
+		return "", err
+	}
+	total := map[string]int64{}
+	for _, d := range docs {
+		total[d.Squad] += d.Points
+	}
+	best, bestPts := "", int64(0)
+	for s, p := range total {
+		if p > bestPts {
+			best, bestPts = s, p
+		}
+	}
+	return best, nil
+}
+
+// AreaAndBFLead returns the current lead nation ('A'/'B'/'C') of an area (which nation controls the most
+// of its battlefields) and of one specific battlefield within it. Used before/after a battle to detect a
+// region or battlefield capture (a change of lead). Returns 0 for an unknown/empty area.
+func (r *WorldRepository) AreaAndBFLead(ctx context.Context, areaID, mapID int32) (areaOwner, bfLead byte, err error) {
+	cur, err := r.battlefields.Find(ctx, bson.M{"areaId": areaID})
+	if err != nil {
+		return 0, 0, err
+	}
+	var bfs []Battlefield
+	if err := cur.All(ctx, &bfs); err != nil {
+		return 0, 0, err
+	}
+	if len(bfs) == 0 {
+		return 0, 0, nil
+	}
+	areaOwner, _, _, _ = areaSummaryFrom(bfs)
+	for _, b := range bfs {
+		if b.MapID == mapID {
+			idx, _ := leadFaction(b.OccA, b.OccB, b.OccC)
+			bfLead = nationChar(idx)
+		}
+	}
+	return areaOwner, bfLead, nil
 }
 
 // RecordEvent appends one world event (rendered later as a WORLD_NEWS item).

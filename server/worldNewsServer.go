@@ -4,13 +4,44 @@ import (
 	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
 	"ChromehoundsStatusServer/logging"
+	"bytes"
 	"context"
+	"encoding/binary"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// News request body is "<gamertag>,<faction>,<category>". Category selects the feed the client wants:
+//   1 = the few most-recent events (the login "unread" popup shows up to ~3);  2 = all events (History).
+const newsRecentCategory = 1
+
+const (
+	newsRecentLimit = 3  // category 1: newest events for the login popup
+	newsAllLimit    = 20 // category 2 (and default): the full History feed (2 blocks x 10)
+)
+
+// parseNewsCategory extracts the category field (the 3rd comma-separated value) from a news request.
+func parseNewsCategory(packet []byte) int {
+	if len(packet) <= constants.MinHelloMessageSize {
+		return 0
+	}
+	body := packet[constants.MinHelloMessageSize:]
+	if i := bytes.IndexByte(body, 0); i >= 0 {
+		body = body[:i]
+	}
+	parts := strings.Split(string(body), ",")
+	if len(parts) >= 3 {
+		if v, err := strconv.Atoi(strings.TrimSpace(parts[2])); err == nil {
+			return v
+		}
+	}
+	return 0
+}
 
 // World Situation NEWS response.
 //
@@ -48,7 +79,7 @@ import (
 type NewsEntry struct {
 	TemplateID int16    // off 0  - story template id (WorldSituationInfoNewsParam.bin -> MenuText fragments)
 	Text       [66]byte // off 2  - dynamic text insert (squad/player name etc.), NUL-terminated
-	EntityID   int16    // off 68 - subject entity id; shown as the middle header number
+	EntityID   int16    // off 68 - the date YEAR: rendered as the middle number of the header "d0/d1/<EntityID> hh:mm"
 	Code       [5]byte  // off 70 - packed date/time, raw bytes: [d0, d1, hour, minute, unused]
 	_          [1]byte  // off 75 - pad to 76
 }
@@ -89,25 +120,35 @@ func date(d0, d1, hour, minute byte) [5]byte {
 	return [5]byte{d0, d1, hour, minute, 0}
 }
 
-func mkNewsEntry(templateID int16, text string, entityID int16, code [5]byte) NewsEntry {
-	e := NewsEntry{TemplateID: templateID, EntityID: entityID, Code: code}
-	copy(e.Text[:], text)
-	return e
+// The news board must never be zero-count: the title REJECTS an empty news reply as "communication
+// failed" (it gates on block-0 flag==0 && count!=0). So when the event feed is empty we serve one
+// "world briefing" story. IMPORTANT: TemplateID is the PARAM ROW id into WorldSituationInfoNewsParam.bin
+// (NOT a raw text id) -- row 75 = header text 14046 "War Breaks Out In Neroimus" + body 15148
+// "...mutual declarations of war...", a fitting season-opener. The reset tool seeds a matching persistent
+// event; this in-server fallback covers a not-yet-reset / read-error state.
+const initEventRow = 75
+
+func briefingEvent(now int64) EventRecord {
+	return EventRecord{CreatedAt: now, TemplateID: initEventRow}
 }
 
-// emptyNewsState is a well-formed reply with no stories: block 0 has status 0 but a zero record count,
-// which the news manager accepts but renders as an empty board (no more static "nation dissolved" fakes).
-func emptyNewsState(xuid [16]byte, order [8]byte) NewsState {
-	return NewsState{Header: CreateHeader(xuid, order)}
-}
-
-// newsEntryFromEvent renders a stored world event as a wire news item: the client composes the whole
-// headline from TemplateID; the header date is derived from the event's timestamp (UTC), EntityID is the
-// header's middle number, and Text is the placeholder insert (empty for the dissolution templates).
+// newsEntryFromEvent renders a stored world event as a wire news item. TemplateID (short@0) selects the
+// whole story (header + 2 bodies) client-side. The header date/time is composed from the event's
+// timestamp across the two date fields the client reads (see the NewsEntry doc, header "d0/d1/<EntityID>
+// hh:mm"): Code = [month, day, hour, minute] and EntityID = the 2-digit year (the middle "MM/DD/YY"
+// number). The placeholder tokens read raw strings from C66's two 33-byte slots: Slot1 -> C66[0..32]
+// (digit-1 tokens), Slot2 -> C66[33..65] (digit-2 tokens); each is capped at 32 bytes so a NUL terminator
+// stays inside its slot.
 func newsEntryFromEvent(ev EventRecord) NewsEntry {
 	t := time.Unix(ev.CreatedAt, 0).UTC()
-	code := date(byte(int(t.Month())), byte(t.Day()), byte(t.Hour()), byte(t.Minute()))
-	return mkNewsEntry(int16(ev.TemplateID), ev.Text, int16(ev.EntityID), code)
+	e := NewsEntry{
+		TemplateID: int16(ev.TemplateID),
+		EntityID:   int16(t.Year() % 100), // header year slot ("MM/DD/YY")
+		Code:       date(byte(int(t.Month())), byte(t.Day()), byte(t.Hour()), byte(t.Minute())),
+	}
+	copy(e.Text[0:32], ev.Slot1)  // slot1 (digit-1 tokens)
+	copy(e.Text[33:65], ev.Slot2) // slot2 (digit-2 tokens)
+	return e
 }
 
 // newsFromEvents packs up to 20 events (newest first) into the reply's two 10-slot blocks.
@@ -138,18 +179,29 @@ type worldNewsServer struct {
 	repo *WorldRepository // nil when Mongo is disabled -> empty news (never the old static fakes)
 }
 
-// buildNews serves the news feed from the events collection, newest first. With no repository (Mongo off)
-// or on a read error it returns an empty board rather than fabricated stories.
-func (s *worldNewsServer) buildNews(hi UserHelloMessage) NewsState {
-	if s.repo == nil {
-		return emptyNewsState(hi.Xuid, hi.Order)
+// buildNews serves the news feed from the events collection, newest first, honoring the request category:
+// category 1 returns only the few most-recent events (the login popup, ~3), category 2 returns the full
+// History feed. Returning the identical feed for both makes the login popup double up (operator note),
+// which is why we split on the category. Falls back to the single world-briefing item so the reply is
+// never empty (harmless -- count 0 is graceful client-side, but the briefing is a real season-opener).
+func (s *worldNewsServer) buildNews(hi UserHelloMessage, category int) NewsState {
+	limit := newsAllLimit
+	if category == newsRecentCategory {
+		limit = newsRecentLimit
 	}
-	readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
-	defer cancel()
-	evs, err := s.repo.RecentEvents(readCtx, 20)
-	if err != nil {
-		logging.Warn.Printf("[%s] events read failed, empty news: %v", s.serverConfig.Label, err)
-		return emptyNewsState(hi.Xuid, hi.Order)
+	var evs []EventRecord
+	if s.repo != nil {
+		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+		defer cancel()
+		got, err := s.repo.RecentEvents(readCtx, limit)
+		if err != nil {
+			logging.Warn.Printf("[%s] events read failed, using briefing: %v", s.serverConfig.Label, err)
+		} else {
+			evs = got
+		}
+	}
+	if len(evs) == 0 {
+		evs = []EventRecord{briefingEvent(time.Now().Unix())}
 	}
 	return newsFromEvents(hi.Xuid, hi.Order, evs)
 }
@@ -170,10 +222,16 @@ func NewWorldNewsServer(listenAddress net.IP, serverConfig config.ServerConfig, 
 		validatePacket: func(packet []byte, clientAddr *net.UDPAddr) error {
 			return validateWorldPacket(packet, clientAddr, serverConfig.Label)
 		},
-		buildPayload: func(hi UserHelloMessage) interface{} {
-			return s.buildNews(hi)
+		// buildResponse (not buildPayload) so we can read the request's category field.
+		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
+			hi := s.parseHelloMessage(readBuffer)
+			resp := s.buildNews(hi, parseNewsCategory(*readBuffer))
+			buf := make([]byte, constants.NewsResponseSize)
+			if _, err := binary.Encode(buf, binary.LittleEndian, resp); err != nil {
+				return nil, err
+			}
+			return &buf, nil
 		},
-		responseSize: constants.NewsResponseSize,
 	}
 
 	return s

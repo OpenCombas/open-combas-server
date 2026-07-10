@@ -270,3 +270,44 @@ func TestEventsAndAreaCountsLive(t *testing.T) {
 		t.Errorf("area counts = %v, want A:1 B:1 C:0", counts)
 	}
 }
+
+// TestCaptureLedgerLive covers the per-squad capture-points ledger (backs |s2=) against real Mongo.
+func TestCaptureLedgerLive(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("set MONGO_TEST_URI to run the live capture-ledger test")
+	}
+	ctx := context.Background()
+
+	store, err := persistence.Connect(ctx, uri, "combas_test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer store.Close(ctx)
+
+	repo := NewWorldRepository(store)
+	_ = repo.captures.Drop(ctx)
+	t.Cleanup(func() { _ = repo.captures.Drop(ctx) })
+
+	// Area 5: Alpha earns 100 (map1) + 50 (map2) = 150; Beta earns 200 (map1).
+	_ = repo.CreditCapture(ctx, 5, 1, "Alpha", 100)
+	_ = repo.CreditCapture(ctx, 5, 2, "Alpha", 50)
+	_ = repo.CreditCapture(ctx, 5, 1, "Beta", 200)
+
+	// Battlefield 5/1 top = Beta (200 > 100).
+	if s, _ := repo.TopSquadForBattlefield(ctx, 5, 1); s != "Beta" {
+		t.Errorf("battlefield 5/1 top = %q, want Beta", s)
+	}
+	// Battlefield 5/2 top = Alpha (only contributor).
+	if s, _ := repo.TopSquadForBattlefield(ctx, 5, 2); s != "Alpha" {
+		t.Errorf("battlefield 5/2 top = %q, want Alpha", s)
+	}
+	// Region 5 total: Beta 200 > Alpha 150.
+	if s, _ := repo.TopSquadForRegion(ctx, 5); s != "Beta" {
+		t.Errorf("region 5 top = %q, want Beta", s)
+	}
+	// Unknown battlefield -> empty.
+	if s, _ := repo.TopSquadForBattlefield(ctx, 9, 9); s != "" {
+		t.Errorf("unknown battlefield top = %q, want empty", s)
+	}
+}

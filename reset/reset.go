@@ -12,6 +12,7 @@ package reset
 import (
 	"ChromehoundsStatusServer/persistence"
 	"context"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -21,6 +22,7 @@ import (
 const (
 	battlefieldsCollection = "battlefields"
 	eventsCollection       = "events"
+	capturesCollection     = "captureContributions"
 
 	// defaultCapturePoints is the occupation-pool capacity used for a battlefield whose real capture
 	// points aren't known yet (known_occ_points lists a 0 for those).
@@ -219,8 +221,25 @@ func BattlefieldReset(ctx context.Context, store *persistence.Store, downscale i
 	}
 
 	// A reset is a new season: clear the accumulated world-event / news feed so stale "nation dissolved"
-	// stories from the previous war don't carry over.
-	if _, err := store.Collection(eventsCollection).DeleteMany(ctx, bson.M{}); err != nil {
+	// stories from the previous war don't carry over, then seed one "world briefing" event. The news
+	// board must never be empty -- the title rejects a zero-count news reply as "communication failed".
+	// Ids match server.initEvent* (header text 14046, body text 15148); field names match EventRecord.
+	events := store.Collection(eventsCollection)
+	if _, err := events.DeleteMany(ctx, bson.M{}); err != nil {
+		return err
+	}
+	if _, err := events.InsertOne(ctx, bson.M{
+		"createdAt":  time.Now().Unix(),
+		"templateId": int32(75), // param ROW 75 = "War Breaks Out In Neroimus" (header 14046 + body 15148)
+		"slot1":      "",        // no placeholders in this story
+		"slot2":      "",
+	}); err != nil {
+		return err
+	}
+
+	// Also clear the per-squad capture-points ledger (backs the |s2= "most-involved squad" in capture
+	// events) so a new season starts with no accumulated contributions.
+	if _, err := store.Collection(capturesCollection).DeleteMany(ctx, bson.M{}); err != nil {
 		return err
 	}
 	return nil

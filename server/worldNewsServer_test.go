@@ -7,16 +7,27 @@ import (
 
 func TestNewsEntryFromEvent(t *testing.T) {
 	ts := time.Date(2026, 7, 9, 12, 34, 0, 0, time.UTC).Unix()
-	e := newsEntryFromEvent(EventRecord{CreatedAt: ts, TemplateID: 3, EntityID: 75, Text: "hi"})
-	if e.TemplateID != 3 || e.EntityID != 75 {
-		t.Errorf("template/entity = %d/%d, want 3/75", e.TemplateID, e.EntityID)
+	e := newsEntryFromEvent(EventRecord{CreatedAt: ts, TemplateID: 35, Slot1: "North Village Ruin", Slot2: "AlphaSquad"})
+	if e.TemplateID != 35 {
+		t.Errorf("template = %d, want 35", e.TemplateID)
 	}
-	// Code header = [month, day, hour, minute, 0] -> renders as "07/09/75 12:34".
+	// Full date sourced from CreatedAt: Code = [month, day, hour, minute], EntityID = 2-digit year.
+	// 2026-07-09 12:34 -> header "07/09/26 12:34".
+	if e.EntityID != 26 {
+		t.Errorf("EntityID = %d, want 26 (2-digit year of 2026)", e.EntityID)
+	}
 	if e.Code != [5]byte{7, 9, 12, 34, 0} {
 		t.Errorf("code = %v, want [7 9 12 34 0]", e.Code)
 	}
-	if string(e.Text[:2]) != "hi" {
-		t.Errorf("text = %q, want hi", string(e.Text[:2]))
+	// C66 = two 33-byte slots: slot1 @ [0..32], slot2 @ [33..65], each NUL-terminated within its slot.
+	if got := string(e.Text[0:18]); got != "North Village Ruin" {
+		t.Errorf("slot1 = %q, want North Village Ruin", got)
+	}
+	if e.Text[32] != 0 {
+		t.Error("slot1 must be NUL-terminated at [32] so it can't bleed into slot2")
+	}
+	if got := string(e.Text[33:43]); got != "AlphaSquad" {
+		t.Errorf("slot2 = %q, want AlphaSquad", got)
 	}
 }
 
@@ -25,7 +36,7 @@ func TestNewsFromEvents(t *testing.T) {
 	// newest-first).
 	evs := make([]EventRecord, 12)
 	for i := range evs {
-		evs[i] = EventRecord{CreatedAt: int64(1000 - i), TemplateID: int32(i + 1), EntityID: int32(i)}
+		evs[i] = EventRecord{CreatedAt: int64(1000 - i), TemplateID: int32(i + 1)}
 	}
 	s := newsFromEvents(squadXuid, [8]byte{}, evs)
 	if s.Blocks[0].Status != 0 || s.Blocks[0].RecordNum != 10 {
@@ -48,13 +59,66 @@ func TestNewsFromEventsEmpty(t *testing.T) {
 	}
 }
 
-func TestDissolutionTemplate(t *testing.T) {
-	for loser, want := range map[byte]int32{'A': 3, 'B': 1, 'C': 2} {
-		if got, ok := dissolutionTemplate(loser); !ok || got != want {
-			t.Errorf("dissolutionTemplate(%c) = %d,%v want %d,true", loser, got, ok, want)
+func TestBriefingNeverEmpty(t *testing.T) {
+	ev := briefingEvent(time.Date(2026, 7, 9, 0, 0, 0, 0, time.UTC).Unix())
+	if ev.TemplateID != initEventRow {
+		t.Errorf("briefing row = %d, want %d (param row 75 = War Breaks Out)", ev.TemplateID, initEventRow)
+	}
+	// The briefing must render as a non-zero-count board (a zero count is rejected as "communication failed").
+	s := newsFromEvents(squadXuid, [8]byte{}, []EventRecord{ev})
+	if s.Blocks[0].Status != 0 || s.Blocks[0].RecordNum != 1 {
+		t.Errorf("briefing board = status %d count %d, want status 0 count 1", s.Blocks[0].Status, s.Blocks[0].RecordNum)
+	}
+}
+
+func TestParseNewsCategory(t *testing.T) {
+	// Request body is "<gamertag>,<faction>,<category>".
+	if c := parseNewsCategory(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,1")); c != 1 {
+		t.Errorf("category = %d, want 1 (login/recent)", c)
+	}
+	if c := parseNewsCategory(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,2")); c != 2 {
+		t.Errorf("category = %d, want 2 (all/history)", c)
+	}
+	if c := parseNewsCategory(makeRequestPacket(squadXuid, [8]byte{}, "player1")); c != 0 {
+		t.Errorf("missing category -> %d, want 0", c)
+	}
+}
+
+func TestCaptureRows(t *testing.T) {
+	if !isHQ(1) || !isHQ(2) || !isHQ(3) || isHQ(4) || isHQ(22) {
+		t.Error("isHQ wrong: areas 1/2/3 are capitals, 4+ are not")
+	}
+	for loser, want := range map[byte]int32{'B': 29, 'C': 30, 'A': 31} {
+		if got, ok := regionCaptureRow(loser); !ok || got != want {
+			t.Errorf("regionCaptureRow(%c) = %d,%v want %d", loser, got, ok, want)
 		}
 	}
-	if _, ok := dissolutionTemplate('Z'); ok {
-		t.Error("dissolutionTemplate('Z') should be false")
+	for loser, want := range map[byte]int32{'B': 35, 'C': 36, 'A': 37} {
+		if got, ok := battlefieldCaptureRow(loser); !ok || got != want {
+			t.Errorf("battlefieldCaptureRow(%c) = %d,%v want %d", loser, got, ok, want)
+		}
+	}
+	if _, ok := regionCaptureRow('Z'); ok {
+		t.Error("regionCaptureRow('Z') should be false")
+	}
+}
+
+func TestDissolutionRow(t *testing.T) {
+	// One param row per loser/winner pair (WorldSituationInfoNewsParam.bin).
+	cases := map[[2]byte]int32{
+		{'A', 'B'}: 3, {'A', 'C'}: 5, // Xeres/Tarakia -> Morskoj / Sal Kar
+		{'B', 'A'}: 1, {'B', 'C'}: 6, // Ostrov/Morskoj -> Tarakia / Sal Kar
+		{'C', 'A'}: 2, {'C', 'B'}: 4, // Qara/Sal Kar -> Tarakia / Morskoj
+	}
+	for pair, want := range cases {
+		if got, ok := dissolutionRow(pair[0], pair[1]); !ok || got != want {
+			t.Errorf("dissolutionRow(%c,%c) = %d,%v want %d,true", pair[0], pair[1], got, ok, want)
+		}
+	}
+	if _, ok := dissolutionRow('A', 'A'); ok {
+		t.Error("dissolutionRow with loser==winner should be false")
+	}
+	if _, ok := dissolutionRow('Z', 'A'); ok {
+		t.Error("dissolutionRow('Z','A') should be false")
 	}
 }
