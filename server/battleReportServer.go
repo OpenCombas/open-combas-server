@@ -101,6 +101,9 @@ type battleReportServer struct {
 	*messageServer
 	squadRepo *SquadRepository // nil when Mongo is disabled -> ack only, no accumulation
 	worldRepo *WorldRepository
+	// generateEvents mirrors the EventServers config toggle: when false we still apply occupation and squad
+	// stats, but record NO data-driven world events (captures/dissolutions), leaving only the seeded briefing.
+	generateEvents bool
 }
 
 // ingest persists one battle report: it moves the fought battlefield's occupation toward the winner and
@@ -118,12 +121,17 @@ func (s *battleReportServer) ingest(packet []byte) {
 
 	if s.worldRepo != nil {
 		// Snapshot state just before the update so we can detect transitions this battle caused:
-		// per-nation area control (elimination) and the fought area/battlefield lead (captures).
-		before, _ := s.worldRepo.NationAreaCounts(ctx)
-		beforeOwner, beforeLead, _ := s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
+		// per-nation area control (elimination) and the fought area/battlefield lead (captures). Only needed
+		// when generating events -- skip the extra reads when the toggle is off.
+		var before map[byte]int
+		var beforeOwner, beforeLead byte
+		if s.generateEvents {
+			before, _ = s.worldRepo.NationAreaCounts(ctx)
+			beforeOwner, beforeLead, _ = s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
+		}
 		if err := s.worldRepo.ApplyBattleOccupation(ctx, res.AreaID, res.MapID, res.WinnerNation, res.LoserNation, res.OccDelta); err != nil {
 			logging.Warn.Printf("[%s] occupation update failed: %v", s.serverConfig.Label, err)
-		} else {
+		} else if s.generateEvents {
 			// Credit the winning squad's capture-points ledger for this battlefield (backs |s2=).
 			if err := s.worldRepo.CreditCapture(ctx, int32(res.AreaID), int32(res.MapID), res.WinnerTeam, res.OccDelta); err != nil {
 				logging.Warn.Printf("[%s] capture-ledger credit failed: %v", s.serverConfig.Label, err)
@@ -281,12 +289,12 @@ func (s *battleReportServer) maybeRecordConquest(ctx context.Context, res Battle
 	logging.Info.Printf("[%s] EVENT: nation %c eliminated by %c -> news row %d", s.serverConfig.Label, res.LoserNation, res.WinnerNation, row)
 }
 
-func NewBattleReportServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, squadRepo *SquadRepository, worldRepo *WorldRepository) *battleReportServer {
-	s := &battleReportServer{squadRepo: squadRepo, worldRepo: worldRepo}
+func NewBattleReportServer(listenAddress net.IP, serverConfig config.EventServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, squadRepo *SquadRepository, worldRepo *WorldRepository) *battleReportServer {
+	s := &battleReportServer{squadRepo: squadRepo, worldRepo: worldRepo, generateEvents: serverConfig.GenerateEvents}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
-		serverConfig:  &serverConfig,
+		serverConfig:  &serverConfig.ServerConfig,
 		bufferSize:    bufferSize,
 		loggingConfig: loggingConfig,
 		ctx:           ctx,

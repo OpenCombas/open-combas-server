@@ -242,28 +242,23 @@ var battlefieldNameID = map[int32]int32{
 	22004: 5209,
 }
 
-// The region/battlefield name placeholders (|A1=/|a1=/|B1) resolve a name by INDEX into the name table, not
-// by absolute MenuText id: slot1 carries a 0-based index = (name text id - table base), base = the first id
-// of each table (region 5020, battlefield 5100). HYPOTHESIS under test 2026-07-11 -- the absolute-id form
-// rendered blank; if this 0-based-index form is also wrong the next candidates are a dense index that skips
-// the %null% gaps, or a binary encoding (pending the RE handler trace).
-const (
-	areaNameTextBase        = 5020
-	battlefieldNameTextBase = 5100
-)
-
-// areaNameSlot / battlefieldNameSlot return the ASCII-decimal name index to place in an event's slot1 for the
-// region/battlefield name placeholder to resolve (empty string if unknown).
+// The region/battlefield name placeholders (|A1=/|a1=/|B1) are id-lookups resolved through the FromSoft
+// PARAM bins, which are keyed by ROW ID: AreaParam rowID = area id (1-25), FieldParam rowID = area*1000+map
+// (1001, 10001, ...) -> word1 = name text id -> MenuText. So slot1 must carry that raw PARAM ROW ID as ASCII
+// decimal (NOT the name string, NOT the name text id, NOT an index -- all ruled out by RE 2026-07-11: wire
+// layout S1,C66,S1,C5 confirmed, |s2= is a raw-string slot, |A1=/|B1 are param id-lookups). The *NameID maps
+// double as the validity check (only emit for a battlefield/area that actually exists).
 func areaNameSlot(areaID int32) string {
-	if id, ok := areaNameID[areaID]; ok {
-		return strconv.Itoa(int(id - areaNameTextBase))
+	if _, ok := areaNameID[areaID]; ok {
+		return strconv.Itoa(int(areaID)) // AreaParam rowID
 	}
 	return ""
 }
 
 func battlefieldNameSlot(areaID, mapID int32) string {
-	if id, ok := battlefieldNameID[areaID*1000+mapID]; ok {
-		return strconv.Itoa(int(id - battlefieldNameTextBase))
+	rowID := areaID*1000 + mapID
+	if _, ok := battlefieldNameID[rowID]; ok {
+		return strconv.Itoa(int(rowID)) // FieldParam rowID
 	}
 	return ""
 }

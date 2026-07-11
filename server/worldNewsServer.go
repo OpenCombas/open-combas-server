@@ -88,11 +88,11 @@ type NewsEntry struct {
 // records in the block. The reply is only cached/displayed when block 0 has status 0 and a
 // non-zero count; the manager then sums header[20] across both blocks for the item count.
 type NewsBlock struct {
-	Status     byte     // off 0  - 0 = success
-	_          [19]byte // off 1
-	RecordNum  byte     // off 20 - number of valid Entries in this block
-	_          [3]byte  // off 21 - pad to 24
-	Entries    [10]NewsEntry
+	Status    byte     // off 0  - 0 = success
+	_         [19]byte // off 1
+	RecordNum byte     // off 20 - number of valid Entries in this block
+	_         [3]byte  // off 21 - pad to 24
+	Entries   [10]NewsEntry
 }
 
 // setEntries fills the block with the given entries and the matching record count.
@@ -175,6 +175,9 @@ func newsFromEvents(xuid [16]byte, order [8]byte, evs []EventRecord) NewsState {
 type worldNewsServer struct {
 	*messageServer
 	repo *WorldRepository // nil when Mongo is disabled -> empty news (never the old static fakes)
+	// generateEvents mirrors the EventServers config toggle: when false the feed serves ONLY the seeded "War
+	// Breaks Out" briefing, ignoring any data-driven events in the DB (see buildNews).
+	generateEvents bool
 }
 
 // buildNews serves one page of the news feed (newest first). page N returns events[(N-1)*20 : N*20]; a
@@ -186,7 +189,9 @@ func (s *worldNewsServer) buildNews(hi UserHelloMessage, page int) NewsState {
 		page = 1
 	}
 	var evs []EventRecord
-	if s.repo != nil {
+	// With event generation disabled, the board shows only the briefing (page 1); we never read the feed, so
+	// any stale/generated events sitting in the DB stay hidden. Falls through to the empty-feed branch below.
+	if s.repo != nil && s.generateEvents {
 		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 		defer cancel()
 		got, err := s.repo.RecentEventsPage(readCtx, (page-1)*newsPageSize, newsPageSize)
@@ -202,12 +207,12 @@ func (s *worldNewsServer) buildNews(hi UserHelloMessage, page int) NewsState {
 	return newsFromEvents(hi.Xuid, hi.Order, evs)
 }
 
-func NewWorldNewsServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *WorldRepository) *worldNewsServer {
-	s := &worldNewsServer{repo: repo}
+func NewWorldNewsServer(listenAddress net.IP, serverConfig config.EventServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *WorldRepository) *worldNewsServer {
+	s := &worldNewsServer{repo: repo, generateEvents: serverConfig.GenerateEvents}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
-		serverConfig:  &serverConfig,
+		serverConfig:  &serverConfig.ServerConfig,
 		bufferSize:    bufferSize,
 		loggingConfig: loggingConfig,
 		ctx:           ctx,

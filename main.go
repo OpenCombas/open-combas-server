@@ -115,9 +115,6 @@ func main() {
 			case config.WorldMapDetail:
 				srv := server.NewWorldMapDetailServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), worldRepo)
 				go srv.Run()
-			case config.WorldNews:
-				srv := server.NewWorldNewsServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), worldRepo)
-				go srv.Run()
 			case config.WorldDonation:
 				srv := server.NewWorldDonationServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), worldRepo)
 				go srv.Run()
@@ -148,9 +145,6 @@ func main() {
 			case config.SquadRanking:
 				srv := server.NewSquadRankingServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo)
 				go srv.Run()
-			case config.BattleReport:
-				srv := server.NewBattleReportServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo, worldRepo)
-				go srv.Run()
 			case config.Echoing:
 				srv := server.NewEchoServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
@@ -170,6 +164,22 @@ func main() {
 		if statusServerConfig.Enabled {
 			srv := server.NewStatusServer(address, statusServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(statusServerConfig.ServerConfig.Type), "server_name": string(statusServerConfig.ServerConfig.Label)}, reg))
 			go srv.Run()
+		}
+	}
+
+	for _, eventServerConfig := range cfg.EventServers {
+		if eventServerConfig.Enabled {
+			labels := prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(eventServerConfig.Type), "server_name": string(eventServerConfig.Label)}, reg)
+			switch eventServerConfig.Type {
+			case config.WorldNews:
+				srv := server.NewWorldNewsServer(address, eventServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, labels, worldRepo)
+				go srv.Run()
+			case config.BattleReport:
+				srv := server.NewBattleReportServer(address, eventServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, labels, squadRepo, worldRepo)
+				go srv.Run()
+			default:
+				logging.Error.Printf("Unsupported event server type: %s\n", eventServerConfig.Type)
+			}
 		}
 	}
 

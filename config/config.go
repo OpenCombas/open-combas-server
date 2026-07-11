@@ -14,6 +14,7 @@ type Config struct {
 	Servers              []ServerConfig
 	StaticMessageServers []StaticMessageServerConfig
 	StatusServers        []StatusServerConfig
+	EventServers         []EventServerConfig
 	Logging              LoggingConfig
 	Prometheus           PrometheusConfig
 	Mongo                MongoConfig
@@ -44,6 +45,15 @@ type StaticMessageServerConfig struct {
 type StatusServerConfig struct {
 	ServerConfig
 	IsResetting bool
+}
+
+// EventServerConfig configures a server in the world-event subsystem: WorldNews (serves the news feed) and
+// BattleReport (generates events from mission results). GenerateEvents gates data-driven events -- when
+// false, BattleReport records no capture/dissolution events and WorldNews serves only the seeded "War Breaks
+// Out" briefing, so the news board never fills with generated stories.
+type EventServerConfig struct {
+	ServerConfig
+	GenerateEvents bool
 }
 
 type LoggingConfig struct {
