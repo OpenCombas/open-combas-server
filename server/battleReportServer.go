@@ -147,7 +147,7 @@ func (s *battleReportServer) ingest(packet []byte) {
 // the TRUE conqueror (no more hardcoded-winner limitation). loser/winner are nation chars 'A'/'B'/'C'
 // (Tarakia/Morskoj/Sal Kar). Returns false for an unknown pair (e.g. loser == winner).
 func dissolutionRow(loser, winner byte) (int32, bool) {
-	switch ([2]byte{loser, winner}) {
+	switch [2]byte{loser, winner} {
 	case [2]byte{'A', 'B'}:
 		return 3, true // Xeres / Tarakia -> Morskoj
 	case [2]byte{'A', 'C'}:
@@ -194,35 +194,61 @@ func battlefieldCaptureRow(loser byte) (int32, bool) {
 	return 0, false
 }
 
+// squadDisplayName resolves a wire team id (e.g. "TM0001000000000042", read from the battle report at
+// +0x26) to the squad's human-readable name for the |s2= "most-involved squad" news slot. The capture
+// ledger keys on the stable team id; we resolve to the name only at render time. Falls back to the raw id
+// when the squad is unknown (e.g. an AI/placeholder team) or the squad repo is unavailable, so the slot is
+// never blank/worse than before.
+func (s *battleReportServer) squadDisplayName(ctx context.Context, teamID string) string {
+	if teamID == "" || s.squadRepo == nil {
+		return teamID
+	}
+	sq, err := s.squadRepo.SquadByTeamID(ctx, teamID)
+	if err != nil {
+		logging.Warn.Printf("[%s] squad-name lookup for %q failed: %v", s.serverConfig.Label, teamID, err)
+		return teamID
+	}
+	if sq == nil || sq.Name == "" {
+		return teamID
+	}
+	return sq.Name
+}
+
 // maybeRecordCaptures emits a battlefield-capture and/or a (non-HQ) region-capture WORLD_NEWS event when
-// this battle changed the lead nation of the fought battlefield / area. EntityID carries the battlefield
-// id (area*1000+map) or area id -- resolved client-side to the |B1=/|A1= name; Text is the top-contributing
-// squad for |s2=.
+// this battle changed the lead nation of the fought battlefield / area.
+//
+// Slot2 = the top-contributing squad NAME (|s2= renders it as a literal string). Slot1 = the place-name
+// TEXT ID (NOT the name string): the region (|A1=/|a1=) and battlefield (|B1) placeholders are id-lookups --
+// the client reads slot1 as a MenuText id and resolves the name itself (region ids 5020-5044, battlefield
+// ids 5100-5209, from WorldSituationInfoNews{Area,Field}Param.bin). Writing the raw name string here renders
+// blank; the id must be sent. areaNameSlot/battlefieldNameSlot yield that id as ASCII decimal.
 func (s *battleReportServer) maybeRecordCaptures(ctx context.Context, res BattleResult, beforeOwner, beforeLead, afterOwner, afterLead byte) {
 	now := time.Now().Unix()
 	// Battlefield captured: the fought battlefield's lead nation changed.
 	if beforeLead != 0 && afterLead != 0 && beforeLead != afterLead {
 		if row, ok := battlefieldCaptureRow(beforeLead); ok {
-			squad, _ := s.worldRepo.TopSquadForBattlefield(ctx, int32(res.AreaID), int32(res.MapID))
-			// slot1 = |B1= battlefield name (pre-resolved), slot2 = |s2= most-involved squad.
-			ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: battlefieldName(int32(res.AreaID), int32(res.MapID)), Slot2: squad}
+			teamID, _ := s.worldRepo.TopSquadForBattlefield(ctx, int32(res.AreaID), int32(res.MapID))
+			squad := s.squadDisplayName(ctx, teamID)
+			// slot1 = |B1 battlefield name TEXT ID (client resolves it), slot2 = |s2= most-involved squad.
+			ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: battlefieldNameSlot(int32(res.AreaID), int32(res.MapID)), Slot2: squad}
 			if err := s.worldRepo.RecordEvent(ctx, ev); err != nil {
 				logging.Warn.Printf("[%s] record battlefield-capture event failed: %v", s.serverConfig.Label, err)
 			} else {
-				logging.Info.Printf("[%s] EVENT: battlefield %d/%d captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, res.AreaID, res.MapID, beforeLead, afterLead, squad, row)
+				logging.Info.Printf("[%s] EVENT: battlefield %q (%d/%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, battlefieldName(int32(res.AreaID), int32(res.MapID)), res.AreaID, res.MapID, beforeLead, afterLead, squad, row)
 			}
 		}
 	}
 	// Region captured: the fought AREA's owner changed and it is a non-HQ region (HQ flips = dissolution).
 	if beforeOwner != 0 && afterOwner != 0 && beforeOwner != afterOwner && !isHQ(res.AreaID) {
 		if row, ok := regionCaptureRow(beforeOwner); ok {
-			squad, _ := s.worldRepo.TopSquadForRegion(ctx, int32(res.AreaID))
-			// slot1 = |A1= region name (pre-resolved), slot2 = |s2= most-involved squad.
-			ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: areaName(int32(res.AreaID)), Slot2: squad}
+			teamID, _ := s.worldRepo.TopSquadForRegion(ctx, int32(res.AreaID))
+			squad := s.squadDisplayName(ctx, teamID)
+			// slot1 = |A1= region name TEXT ID (client resolves it), slot2 = |s2= most-involved squad.
+			ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: areaNameSlot(int32(res.AreaID)), Slot2: squad}
 			if err := s.worldRepo.RecordEvent(ctx, ev); err != nil {
 				logging.Warn.Printf("[%s] record region-capture event failed: %v", s.serverConfig.Label, err)
 			} else {
-				logging.Info.Printf("[%s] EVENT: region %d captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, res.AreaID, beforeOwner, afterOwner, squad, row)
+				logging.Info.Printf("[%s] EVENT: region %q (%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, areaName(int32(res.AreaID)), res.AreaID, beforeOwner, afterOwner, squad, row)
 			}
 		}
 	}

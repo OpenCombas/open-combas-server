@@ -1,5 +1,7 @@
 package server
 
+import "strconv"
+
 // Code-generated from WorldSituationInfoNews{Area,Field}Param.bin + MenuText_Eng.fmg (2026-07-10):
 // pre-resolved region/battlefield NAMES for the WORLD_NEWS placeholder slots. The client renders raw
 // strings from the entry's C66 slots, so we substitute the name server-side.
@@ -120,3 +122,148 @@ var battlefieldNames = map[int32]string{
 
 func areaName(areaID int32) string               { return areaNames[areaID] }
 func battlefieldName(areaID, mapID int32) string { return battlefieldNames[areaID*1000+mapID] }
+
+// --- Name TEXT-ID maps (id-lookup rendering) ---
+//
+// WORLD_NEWS renders a region/battlefield name NOT from a raw string in the entry, but by looking the name
+// up from a name TABLE: the |A1=/|a1= (region) and |B1 (battlefield) placeholders read their slot as a name
+// reference and resolve it client-side (see areaNameSlot/battlefieldNameSlot for the exact slot encoding).
+// Sourced from WorldSituationInfoNews{Area,Field}Param.bin word1 (2026-07-11); the name strings above are
+// kept only for server logs.
+
+var areaNameID = map[int32]int32{
+	1:  5020,
+	2:  5021,
+	3:  5022,
+	4:  5023,
+	5:  5024,
+	6:  5025,
+	7:  5026,
+	8:  5027,
+	9:  5028,
+	10: 5029,
+	11: 5030,
+	12: 5031,
+	13: 5032,
+	14: 5033,
+	15: 5034,
+	16: 5035,
+	17: 5036,
+	18: 5037,
+	19: 5038,
+	20: 5039,
+	21: 5040,
+	22: 5041,
+	23: 5042,
+	24: 5043,
+	25: 5044,
+}
+
+var battlefieldNameID = map[int32]int32{
+	1001:  5100,
+	1002:  5101,
+	1003:  5102,
+	1004:  5103,
+	2001:  5106,
+	2002:  5107,
+	2003:  5108,
+	2004:  5109,
+	3001:  5111,
+	3002:  5112,
+	3003:  5113,
+	4001:  5115,
+	4002:  5116,
+	4003:  5117,
+	5001:  5121,
+	5002:  5122,
+	5003:  5123,
+	6001:  5125,
+	6002:  5126,
+	6003:  5127,
+	6004:  5128,
+	7001:  5129,
+	7002:  5130,
+	7003:  5131,
+	8001:  5134,
+	8002:  5135,
+	8003:  5136,
+	8004:  5137,
+	9001:  5138,
+	9002:  5139,
+	9003:  5140,
+	9004:  5141,
+	10001: 5143,
+	10002: 5144,
+	10003: 5145,
+	10004: 5146,
+	11001: 5149,
+	11002: 5150,
+	11003: 5151,
+	11004: 5152,
+	12001: 5155,
+	12002: 5156,
+	12003: 5157,
+	12004: 5158,
+	13001: 5161,
+	13002: 5162,
+	13003: 5163,
+	14001: 5166,
+	14002: 5167,
+	14003: 5168,
+	15001: 5172,
+	15002: 5173,
+	15003: 5174,
+	15004: 5175,
+	16001: 5178,
+	16002: 5179,
+	16003: 5180,
+	17001: 5184,
+	17002: 5185,
+	17003: 5186,
+	17004: 5187,
+	18001: 5190,
+	18002: 5191,
+	18003: 5192,
+	18004: 5193,
+	19001: 5195,
+	19002: 5196,
+	19003: 5197,
+	20001: 5198,
+	20002: 5199,
+	20003: 5200,
+	20004: 5201,
+	21001: 5202,
+	21002: 5203,
+	21003: 5204,
+	21004: 5205,
+	22001: 5206,
+	22002: 5207,
+	22003: 5208,
+	22004: 5209,
+}
+
+// The region/battlefield name placeholders (|A1=/|a1=/|B1) resolve a name by INDEX into the name table, not
+// by absolute MenuText id: slot1 carries a 0-based index = (name text id - table base), base = the first id
+// of each table (region 5020, battlefield 5100). HYPOTHESIS under test 2026-07-11 -- the absolute-id form
+// rendered blank; if this 0-based-index form is also wrong the next candidates are a dense index that skips
+// the %null% gaps, or a binary encoding (pending the RE handler trace).
+const (
+	areaNameTextBase        = 5020
+	battlefieldNameTextBase = 5100
+)
+
+// areaNameSlot / battlefieldNameSlot return the ASCII-decimal name index to place in an event's slot1 for the
+// region/battlefield name placeholder to resolve (empty string if unknown).
+func areaNameSlot(areaID int32) string {
+	if id, ok := areaNameID[areaID]; ok {
+		return strconv.Itoa(int(id - areaNameTextBase))
+	}
+	return ""
+}
+
+func battlefieldNameSlot(areaID, mapID int32) string {
+	if id, ok := battlefieldNameID[areaID*1000+mapID]; ok {
+		return strconv.Itoa(int(id - battlefieldNameTextBase))
+	}
+	return ""
+}
