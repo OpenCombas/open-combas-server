@@ -190,9 +190,16 @@ func (r *WorldRepository) RecordEvent(ctx context.Context, ev EventRecord) error
 
 // RecentEvents returns up to limit world events, newest first (by createdAt, then insertion order).
 func (r *WorldRepository) RecentEvents(ctx context.Context, limit int) ([]EventRecord, error) {
+	return r.RecentEventsPage(ctx, 0, limit)
+}
+
+// RecentEventsPage returns one page of world events, newest first: skip the newest `skip`, then take up
+// to `limit`. Backs the WORLD_NEWS pager (the client requests page 1, page 2, ... and appends them).
+func (r *WorldRepository) RecentEventsPage(ctx context.Context, skip, limit int) ([]EventRecord, error) {
 	cur, err := r.events.Find(ctx, bson.M{},
 		options.Find().
 			SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).
+			SetSkip(int64(skip)).
 			SetLimit(int64(limit)))
 	if err != nil {
 		return nil, err
@@ -242,8 +249,27 @@ func (r *WorldRepository) EnsureSchema(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
+	// events: sorted by createdAt for the news feed (RecentEvents).
+	if _, err := r.events.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "createdAt", Value: -1}},
+	}); err != nil {
+		return err
+	}
+	// captureContributions: one doc per (area, map, squad) -- unique so CreditCapture's upsert increments.
+	if _, err := r.captures.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "areaId", Value: 1}, {Key: "mapId", Value: 1}, {Key: "squad", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return err
+	}
 
-	return seedIfEmpty(ctx, r.nations, toAny(seedNations()))
+	// Seed-if-empty (idempotent, NON-destructive -- runs on every boot, never wipes existing war state):
+	// nations economy, and one briefing news event so a fresh DB / a newly-added events feature has a
+	// non-empty board WITHOUT needing a full world reset. Existing rows are left untouched.
+	if err := seedIfEmpty(ctx, r.nations, toAny(seedNations())); err != nil {
+		return err
+	}
+	return seedIfEmpty(ctx, r.events, []any{briefingEvent(time.Now().Unix())})
 }
 
 func (r *WorldRepository) BattlefieldsByArea(ctx context.Context, areaID byte) ([]Battlefield, error) {

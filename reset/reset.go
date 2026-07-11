@@ -12,6 +12,7 @@ package reset
 import (
 	"ChromehoundsStatusServer/persistence"
 	"context"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -193,14 +194,38 @@ func seedBattlefields(downscale int32) []battlefield {
 	return out
 }
 
-// BattlefieldReset re-initializes the stored battlefield occupation to the canonical starting layout:
+// Reset runs the requested subsystem reset. only == "" or "all" resets the WHOLE world (a new season:
+// battlefields + events + captures). A specific subsystem ("battlefields"/"world", "events"/"news", or
+// "captures") resets ONLY that one, so a feature can be re-tested mid-season WITHOUT wiping unrelated
+// accumulated state -- e.g. re-seed the news feed while keeping the war map. downscale applies only to
+// the battlefield reset. All parts are DESTRUCTIVE for the state they touch.
+func Reset(ctx context.Context, store *persistence.Store, downscale int32, only string) error {
+	switch only {
+	case "", "all":
+		if err := resetBattlefields(ctx, store, downscale); err != nil {
+			return err
+		}
+		if err := resetEvents(ctx, store); err != nil {
+			return err
+		}
+		return resetCaptures(ctx, store)
+	case "battlefields", "world":
+		return resetBattlefields(ctx, store, downscale)
+	case "events", "news":
+		return resetEvents(ctx, store)
+	case "captures":
+		return resetCaptures(ctx, store)
+	default:
+		return fmt.Errorf("unknown --only subsystem %q (valid: all, battlefields, events, captures)", only)
+	}
+}
+
+// resetBattlefields re-initializes the stored battlefield occupation to the canonical starting layout:
 // every area's maps at their default per-nation occupation (100% owned by the area's default nation) with
 // each battlefield's capacity set to its known capture points (or 25000), divided by downscale (see
-// seedBattlefields). This is DESTRUCTIVE -- it discards any war progression accumulated from post-mission
-// (1214) battle reports.
-func BattlefieldReset(ctx context.Context, store *persistence.Store, downscale int32) error {
+// seedBattlefields). DESTRUCTIVE -- discards war progression from post-mission (1214) battle reports.
+func resetBattlefields(ctx context.Context, store *persistence.Store, downscale int32) error {
 	coll := store.Collection(battlefieldsCollection)
-
 	if _, err := coll.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "areaId", Value: 1}, {Key: "mapId", Value: 1}},
 		Options: options.Index().SetUnique(true),
@@ -210,37 +235,34 @@ func BattlefieldReset(ctx context.Context, store *persistence.Store, downscale i
 	if _, err := coll.DeleteMany(ctx, bson.M{}); err != nil {
 		return err
 	}
-
 	docs := seedBattlefields(downscale)
 	anyDocs := make([]any, len(docs))
 	for i, d := range docs {
 		anyDocs[i] = d
 	}
-	if _, err := coll.InsertMany(ctx, anyDocs); err != nil {
-		return err
-	}
+	_, err := coll.InsertMany(ctx, anyDocs)
+	return err
+}
 
-	// A reset is a new season: clear the accumulated world-event / news feed so stale "nation dissolved"
-	// stories from the previous war don't carry over, then seed one "world briefing" event. The news
-	// board must never be empty -- the title rejects a zero-count news reply as "communication failed".
-	// Ids match server.initEvent* (header text 14046, body text 15148); field names match EventRecord.
+// resetEvents clears the world-event / news feed and seeds one "world briefing" event, so stale stories
+// from the previous war don't carry over and the board is never empty (the title rejects a zero-count
+// news reply). Fields match server.EventRecord (row 75 = "War Breaks Out In Neroimus").
+func resetEvents(ctx context.Context, store *persistence.Store) error {
 	events := store.Collection(eventsCollection)
 	if _, err := events.DeleteMany(ctx, bson.M{}); err != nil {
 		return err
 	}
-	if _, err := events.InsertOne(ctx, bson.M{
+	_, err := events.InsertOne(ctx, bson.M{
 		"createdAt":  time.Now().Unix(),
-		"templateId": int32(75), // param ROW 75 = "War Breaks Out In Neroimus" (header 14046 + body 15148)
-		"slot1":      "",        // no placeholders in this story
+		"templateId": int32(75), // param ROW 75 = "War Breaks Out In Neroimus"
+		"slot1":      "",
 		"slot2":      "",
-	}); err != nil {
-		return err
-	}
+	})
+	return err
+}
 
-	// Also clear the per-squad capture-points ledger (backs the |s2= "most-involved squad" in capture
-	// events) so a new season starts with no accumulated contributions.
-	if _, err := store.Collection(capturesCollection).DeleteMany(ctx, bson.M{}); err != nil {
-		return err
-	}
-	return nil
+// resetCaptures clears the per-squad capture-points ledger (backs the |s2= "most-involved squad").
+func resetCaptures(ctx context.Context, store *persistence.Store) error {
+	_, err := store.Collection(capturesCollection).DeleteMany(ctx, bson.M{})
+	return err
 }

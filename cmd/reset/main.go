@@ -21,8 +21,9 @@ import (
 )
 
 func main() {
-	confirm := flag.Bool("confirm", false, "perform the destructive battlefield reset (required)")
+	confirm := flag.Bool("confirm", false, "perform the destructive reset (required)")
 	downscale := flag.Int("downscale", 1, "divide starting capture points (battlefield capacity) by this factor to scale the war to the playerbase size (>=1; e.g. 20 -> a 25000-point battlefield starts at 1250)")
+	only := flag.String("only", "", "reset ONLY one subsystem instead of the whole world: battlefields | events | captures (default: all). Lets a feature be re-tested mid-season without wiping unrelated state")
 	flag.Parse()
 
 	if *downscale < 1 {
@@ -34,8 +35,12 @@ func main() {
 		logging.Error.Fatalf("[RESET] Mongo is not enabled; set MONGO_URI (and MONGO_DATABASE) or enable [Mongo] in config.toml")
 	}
 
+	scope := *only
+	if scope == "" {
+		scope = "all"
+	}
 	if !*confirm {
-		logging.Warn.Printf("[RESET] battlefield reset is DESTRUCTIVE (discards war progression on database %q). Re-run with -confirm to proceed.", cfg.Mongo.Database)
+		logging.Warn.Printf("[RESET] reset (%s) is DESTRUCTIVE for that state on database %q. Re-run with -confirm to proceed.", scope, cfg.Mongo.Database)
 		return
 	}
 
@@ -52,9 +57,9 @@ func main() {
 		_ = store.Close(closeCtx)
 	}()
 
-	logging.Info.Printf("[RESET] running battlefield reset on database %q (downscale %d)...", cfg.Mongo.Database, *downscale)
-	if err := reset.BattlefieldReset(ctx, store, int32(*downscale)); err != nil {
-		logging.Error.Fatalf("[RESET] battlefield reset failed: %v", err)
+	logging.Info.Printf("[RESET] running reset (%s) on database %q (downscale %d)...", scope, cfg.Mongo.Database, *downscale)
+	if err := reset.Reset(ctx, store, int32(*downscale), *only); err != nil {
+		logging.Error.Fatalf("[RESET] reset failed: %v", err)
 	}
-	logging.Info.Printf("[RESET] battlefield reset complete (downscale %d)", *downscale)
+	logging.Info.Printf("[RESET] reset (%s) complete", scope)
 }

@@ -16,19 +16,17 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// News request body is "<gamertag>,<faction>,<category>". Category selects the feed the client wants:
-//   1 = the few most-recent events (the login "unread" popup shows up to ~3);  2 = all events (History).
-const newsRecentCategory = 1
+// News request body is "<gamertag>,<nation>,<page>" (RE: the 3rd field is a 1-based PAGE index, not a
+// category). The client's login "news flash" fetches page 1 THEN page 2 and APPENDS both into one scroll
+// list, so each page must return a DISTINCT slice -- page N = the Nth block of newsPageSize events, newest
+// first. Returning identical content for two pages double-renders the login popup. A page past the end is a
+// valid EMPTY terminator (count 0 is graceful client-side); we keep the full 1568B layout on every page.
+const newsPageSize = 20 // 2 blocks x 10 entries
 
-const (
-	newsRecentLimit = 3  // category 1: newest events for the login popup
-	newsAllLimit    = 20 // category 2 (and default): the full History feed (2 blocks x 10)
-)
-
-// parseNewsCategory extracts the category field (the 3rd comma-separated value) from a news request.
-func parseNewsCategory(packet []byte) int {
+// parseNewsPage extracts the 1-based page (the 3rd comma-separated field) from a news request; default 1.
+func parseNewsPage(packet []byte) int {
 	if len(packet) <= constants.MinHelloMessageSize {
-		return 0
+		return 1
 	}
 	body := packet[constants.MinHelloMessageSize:]
 	if i := bytes.IndexByte(body, 0); i >= 0 {
@@ -36,11 +34,11 @@ func parseNewsCategory(packet []byte) int {
 	}
 	parts := strings.Split(string(body), ",")
 	if len(parts) >= 3 {
-		if v, err := strconv.Atoi(strings.TrimSpace(parts[2])); err == nil {
+		if v, err := strconv.Atoi(strings.TrimSpace(parts[2])); err == nil && v >= 1 {
 			return v
 		}
 	}
-	return 0
+	return 1
 }
 
 // World Situation NEWS response.
@@ -179,28 +177,26 @@ type worldNewsServer struct {
 	repo *WorldRepository // nil when Mongo is disabled -> empty news (never the old static fakes)
 }
 
-// buildNews serves the news feed from the events collection, newest first, honoring the request category:
-// category 1 returns only the few most-recent events (the login popup, ~3), category 2 returns the full
-// History feed. Returning the identical feed for both makes the login popup double up (operator note),
-// which is why we split on the category. Falls back to the single world-briefing item so the reply is
-// never empty (harmless -- count 0 is graceful client-side, but the briefing is a real season-opener).
-func (s *worldNewsServer) buildNews(hi UserHelloMessage, category int) NewsState {
-	limit := newsAllLimit
-	if category == newsRecentCategory {
-		limit = newsRecentLimit
+// buildNews serves one page of the news feed (newest first). page N returns events[(N-1)*20 : N*20]; a
+// page past the end returns an empty (count 0) terminator, which the client treats as the end of the list.
+// Only page 1 falls back to the briefing when the whole feed is empty (a not-yet-seeded DB) -- later pages
+// legitimately terminate empty.
+func (s *worldNewsServer) buildNews(hi UserHelloMessage, page int) NewsState {
+	if page < 1 {
+		page = 1
 	}
 	var evs []EventRecord
 	if s.repo != nil {
 		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 		defer cancel()
-		got, err := s.repo.RecentEvents(readCtx, limit)
+		got, err := s.repo.RecentEventsPage(readCtx, (page-1)*newsPageSize, newsPageSize)
 		if err != nil {
 			logging.Warn.Printf("[%s] events read failed, using briefing: %v", s.serverConfig.Label, err)
 		} else {
 			evs = got
 		}
 	}
-	if len(evs) == 0 {
+	if len(evs) == 0 && page == 1 {
 		evs = []EventRecord{briefingEvent(time.Now().Unix())}
 	}
 	return newsFromEvents(hi.Xuid, hi.Order, evs)
@@ -222,10 +218,10 @@ func NewWorldNewsServer(listenAddress net.IP, serverConfig config.ServerConfig, 
 		validatePacket: func(packet []byte, clientAddr *net.UDPAddr) error {
 			return validateWorldPacket(packet, clientAddr, serverConfig.Label)
 		},
-		// buildResponse (not buildPayload) so we can read the request's category field.
+		// buildResponse (not buildPayload) so we can read the request's page field.
 		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
 			hi := s.parseHelloMessage(readBuffer)
-			resp := s.buildNews(hi, parseNewsCategory(*readBuffer))
+			resp := s.buildNews(hi, parseNewsPage(*readBuffer))
 			buf := make([]byte, constants.NewsResponseSize)
 			if _, err := binary.Encode(buf, binary.LittleEndian, resp); err != nil {
 				return nil, err

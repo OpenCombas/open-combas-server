@@ -71,16 +71,16 @@ func TestBriefingNeverEmpty(t *testing.T) {
 	}
 }
 
-func TestParseNewsCategory(t *testing.T) {
-	// Request body is "<gamertag>,<faction>,<category>".
-	if c := parseNewsCategory(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,1")); c != 1 {
-		t.Errorf("category = %d, want 1 (login/recent)", c)
+func TestParseNewsPage(t *testing.T) {
+	// Request body is "<gamertag>,<nation>,<page>" -- the 3rd field is a 1-based page index.
+	if p := parseNewsPage(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,1")); p != 1 {
+		t.Errorf("page = %d, want 1", p)
 	}
-	if c := parseNewsCategory(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,2")); c != 2 {
-		t.Errorf("category = %d, want 2 (all/history)", c)
+	if p := parseNewsPage(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,2")); p != 2 {
+		t.Errorf("page = %d, want 2", p)
 	}
-	if c := parseNewsCategory(makeRequestPacket(squadXuid, [8]byte{}, "player1")); c != 0 {
-		t.Errorf("missing category -> %d, want 0", c)
+	if p := parseNewsPage(makeRequestPacket(squadXuid, [8]byte{}, "player1")); p != 1 {
+		t.Errorf("missing page -> %d, want default 1", p)
 	}
 }
 
