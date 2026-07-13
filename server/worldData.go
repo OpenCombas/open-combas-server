@@ -11,7 +11,7 @@ const battlefieldCapacity = 35000 // per-battlefield occupation capacity (the "/
 
 // areaBattlefieldCount[N] = number of battlefields in area N (index 1..22), from mapdata/map/mNN_*.
 var areaBattlefieldCount = [23]byte{
-	0, // index 0 unused (areas are 1-based)
+	0,                            // index 0 unused (areas are 1-based)
 	4, 4, 3, 3, 3, 4, 3, 4, 4, 4, // 1-10
 	4, 4, 3, 3, 4, 3, 4, 4, 3, 4, // 11-20
 	4, 4, // 21-22
@@ -45,7 +45,7 @@ func areaBattlefields(areaID byte) ([6]AreaMapRecord, byte) {
 		// the largest slice, then the remainder splits between the other two with the last nation
 		// taking the exact remainder.
 		cap := int32(battlefieldCapacity)
-		lead := cap * int32(50+(n*7+int(j)*11)%25) / 100   // 50..74% of capacity
+		lead := cap * int32(50+(n*7+int(j)*11)%25) / 100 // 50..74% of capacity
 		rem := cap - lead
 		second := rem * int32(55+(n*5+int(j)*13)%30) / 100 // 55..84% of the remainder
 		third := rem - second                              // exact remainder -> lead+second+third == cap
@@ -77,31 +77,32 @@ func areaControlSummary(areaID byte) (owner byte, pointsA, pointsB, pointsC int3
 	if count == 0 {
 		return 'A', 0, 0, 0
 	}
-	var sumA, sumB, sumC int32
-	var leadCount [3]int
+	// Per-nation OCCUPATION POINTS (the orange dots) = the strategic value of the battlefields each nation
+	// CONTROLS -- NOT the capture-level occupation, which only decides who controls a battlefield and must
+	// not surface to the area (its magnitude saturates the small dot display). Mirrors areaSummaryFrom (the
+	// live/Mongo path); occTotal is only the owner tiebreak.
+	var points, occTotal [3]int32
 	for j := byte(0); j < count; j++ {
-		sumA += maps[j].InvasionA
-		sumB += maps[j].InvasionB
-		sumC += maps[j].InvasionC
+		occTotal[0] += maps[j].InvasionA
+		occTotal[1] += maps[j].InvasionB
+		occTotal[2] += maps[j].InvasionC
+		if maps[j].ControlLevel <= 0 {
+			continue
+		}
 		switch maps[j].ControllingFaction {
 		case 'A':
-			leadCount[0]++
+			points[0] += maps[j].OccupationPoints
 		case 'B':
-			leadCount[1]++
+			points[1] += maps[j].OccupationPoints
 		case 'C':
-			leadCount[2]++
+			points[2] += maps[j].OccupationPoints
 		}
 	}
 	best := 0
 	for i := 1; i < 3; i++ {
-		if leadCount[i] > leadCount[best] {
+		if points[i] > points[best] || (points[i] == points[best] && occTotal[i] > occTotal[best]) {
 			best = i
 		}
 	}
-	// Average across battlefields so the per-nation area occupation stays on the same 0..capacity
-	// scale as a single battlefield. Summing made every nation read as full control because the
-	// total far exceeded whatever the area display divides by. The three averages still sum to the
-	// capacity (each battlefield's three slices sum to capacity).
-	c := int32(count)
-	return nationChar(best), sumA / c, sumB / c, sumC / c
+	return nationChar(best), points[0], points[1], points[2]
 }

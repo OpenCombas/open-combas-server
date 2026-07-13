@@ -352,9 +352,11 @@ func (r *WorldRepository) BattlefieldsGrouped(ctx context.Context) (map[byte][]B
 
 // CreditNationDonation applies one world-screen donation to a nation's totalIncome ("Total Revenue"),
 // returning the status byte the client expects (parser sub_823BDFB0):
-//   '1' Complete       - credited
-//   '2' Country is Dead - target nation eliminated (no credit)
-//   '3' Acceptance end  - unknown nation / not accepting (no credit)
+//
+//	'1' Complete       - credited
+//	'2' Country is Dead - target nation eliminated (no credit)
+//	'3' Acceptance end  - unknown nation / not accepting (no credit)
+//
 // The credit is clamped to the int32 ceiling of the wire field so repeated donations can't wrap it
 // negative. The write is guarded on deadFlag == 0 so a nation that dies between the read and the write
 // is not credited.
@@ -559,23 +561,29 @@ func areaSummaryFrom(bfs []Battlefield) (owner byte, pointsA, pointsB, pointsC i
 	if len(bfs) == 0 {
 		return 'A', 0, 0, 0
 	}
-	var sumA, sumB, sumC int32
-	var leadCount [3]int
+	// The area's per-nation OCCUPATION POINTS (the orange dots) = the strategic value of the battlefields
+	// each nation CONTROLS. This is a DIFFERENT quantity from a battlefield's capture level (OccA/OccB/OccC):
+	// capture level only decides who controls that battlefield and must NOT be surfaced to the area -- the raw
+	// occupation magnitude (or its average) saturates the small 0-N dot display (e.g. full-capacity occ shows
+	// every nation at max). occTotal is kept only as the owner tiebreak.
+	var points, occTotal [3]int32
 	for _, b := range bfs {
-		sumA += b.OccA
-		sumB += b.OccB
-		sumC += b.OccC
-		idx, _ := leadFaction(b.OccA, b.OccB, b.OccC)
-		leadCount[idx]++
+		occTotal[0] += b.OccA
+		occTotal[1] += b.OccB
+		occTotal[2] += b.OccC
+		if idx, level := leadFaction(b.OccA, b.OccB, b.OccC); level > 0 {
+			points[idx] += b.StrategicValue
+		}
 	}
+	// Area owner = the nation holding the most occupation points (matches the dots), ties broken by total
+	// occupation. (Was "most battlefields led", which on an even split silently defaulted to nation A.)
 	best := 0
 	for i := 1; i < 3; i++ {
-		if leadCount[i] > leadCount[best] {
+		if points[i] > points[best] || (points[i] == points[best] && occTotal[i] > occTotal[best]) {
 			best = i
 		}
 	}
-	c := int32(len(bfs))
-	return nationChar(best), sumA / c, sumB / c, sumC / c
+	return nationChar(best), points[0], points[1], points[2]
 }
 
 // --- NationData <-> NationRecord conversions ---
