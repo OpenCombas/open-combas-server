@@ -289,25 +289,33 @@ func TestCaptureLedgerLive(t *testing.T) {
 	_ = repo.captures.Drop(ctx)
 	t.Cleanup(func() { _ = repo.captures.Drop(ctx) })
 
-	// Area 5: Alpha earns 100 (map1) + 50 (map2) = 150; Beta earns 200 (map1).
-	_ = repo.CreditCapture(ctx, 5, 1, "Alpha", 100)
-	_ = repo.CreditCapture(ctx, 5, 2, "Alpha", 50)
-	_ = repo.CreditCapture(ctx, 5, 1, "Beta", 200)
+	// Area 5, bf 1: Alpha (nation A) earns 100; Beta (nation B) earns 200 (a rival that won this
+	// battlefield earlier). Alpha also earns 50 on bf 2. The point of the fix: a capture BY nation A must
+	// surface A's top squad (Alpha), NOT the higher-scoring rival Beta.
+	_ = repo.CreditCapture(ctx, 5, 1, "Alpha", "A", 100)
+	_ = repo.CreditCapture(ctx, 5, 2, "Alpha", "A", 50)
+	_ = repo.CreditCapture(ctx, 5, 1, "Beta", "B", 200)
 
-	// Battlefield 5/1 top = Beta (200 > 100).
-	if s, _ := repo.TopSquadForBattlefield(ctx, 5, 1); s != "Beta" {
-		t.Errorf("battlefield 5/1 top = %q, want Beta", s)
+	// Battlefield 5/1: nation A -> Alpha (Beta scored more but is a rival); nation B -> Beta.
+	if s, _ := repo.TopSquadForBattlefield(ctx, 5, 1, "A"); s != "Alpha" {
+		t.Errorf("battlefield 5/1 nation A top = %q, want Alpha", s)
 	}
-	// Battlefield 5/2 top = Alpha (only contributor).
-	if s, _ := repo.TopSquadForBattlefield(ctx, 5, 2); s != "Alpha" {
-		t.Errorf("battlefield 5/2 top = %q, want Alpha", s)
+	if s, _ := repo.TopSquadForBattlefield(ctx, 5, 1, "B"); s != "Beta" {
+		t.Errorf("battlefield 5/1 nation B top = %q, want Beta", s)
 	}
-	// Region 5 total: Beta 200 > Alpha 150.
-	if s, _ := repo.TopSquadForRegion(ctx, 5); s != "Beta" {
-		t.Errorf("region 5 top = %q, want Beta", s)
+	// Battlefield 5/2: nation A -> Alpha (only contributor).
+	if s, _ := repo.TopSquadForBattlefield(ctx, 5, 2, "A"); s != "Alpha" {
+		t.Errorf("battlefield 5/2 nation A top = %q, want Alpha", s)
+	}
+	// Region 5: nation A total = Alpha 150; nation B = Beta 200.
+	if s, _ := repo.TopSquadForRegion(ctx, 5, "A"); s != "Alpha" {
+		t.Errorf("region 5 nation A top = %q, want Alpha", s)
+	}
+	if s, _ := repo.TopSquadForRegion(ctx, 5, "B"); s != "Beta" {
+		t.Errorf("region 5 nation B top = %q, want Beta", s)
 	}
 	// Unknown battlefield -> empty.
-	if s, _ := repo.TopSquadForBattlefield(ctx, 9, 9); s != "" {
+	if s, _ := repo.TopSquadForBattlefield(ctx, 9, 9, "A"); s != "" {
 		t.Errorf("unknown battlefield top = %q, want empty", s)
 	}
 }

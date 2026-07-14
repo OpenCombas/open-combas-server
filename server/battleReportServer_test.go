@@ -83,7 +83,8 @@ func TestParseBattleReport(t *testing.T) {
 	}
 }
 
-// TestBattleReportIngestLive exercises the occupation move + squad-stat accumulation against a real Mongo.
+// TestBattleReportIngestLive exercises the winner-takes-all capture + lock primitives and squad-stat
+// accumulation against a real Mongo.
 func TestBattleReportIngestLive(t *testing.T) {
 	uri := os.Getenv("MONGO_TEST_URI")
 	if uri == "" {
@@ -99,30 +100,53 @@ func TestBattleReportIngestLive(t *testing.T) {
 	world := NewWorldRepository(store)
 	squad := NewSquadRepository(store)
 	_ = world.battlefields.Drop(ctx)
+	_ = world.nations.Drop(ctx)
 	_ = squad.stats.Drop(ctx)
-	t.Cleanup(func() { _ = world.battlefields.Drop(ctx); _ = squad.stats.Drop(ctx) })
+	t.Cleanup(func() {
+		_ = world.battlefields.Drop(ctx)
+		_ = world.nations.Drop(ctx)
+		_ = squad.stats.Drop(ctx)
+	})
 
-	// --- occupation move ---
-	// Seed a battlefield fully held by nation C. Nation A wins -> A gains 99, C loses 99.
+	// --- capture (winner-takes-all + lock) ---
+	// Seed a battlefield fully held by nation C. A captures it -> 100% A, and C is locked out until it
+	// has fought UnlockBattleThreshold more battles.
 	if _, err := world.battlefields.InsertOne(ctx, Battlefield{AreaID: 20, MapID: 2, Capacity: 20000, OccC: 20000}); err != nil {
 		t.Fatalf("seed bf: %v", err)
 	}
-	if err := world.ApplyBattleOccupation(ctx, 20, 2, 'A', 'C', 99); err != nil {
-		t.Fatalf("ApplyBattleOccupation: %v", err)
+	if err := world.CaptureBattlefield(ctx, 20, 2, 'A', 'C', 10); err != nil {
+		t.Fatalf("CaptureBattlefield: %v", err)
 	}
-	if bf, _ := world.BattlefieldByAreaMap(ctx, 20, 2); bf == nil || bf.OccA != 99 || bf.OccC != 20000-99 {
-		t.Errorf("occupation = %+v, want occA=99 occC=%d", bf, 20000-99)
+	if bf, _ := world.BattlefieldByAreaMap(ctx, 20, 2); bf == nil || bf.OccA != 20000 || bf.OccC != 0 || !bf.Locked || bf.DefeatedNation != "C" || bf.UnlockAtBattle != 10 {
+		t.Errorf("capture = %+v, want occA=20000 occC=0 locked defeated=C unlock@10", bf)
 	}
 
-	// Clamp: near-boundary battlefield; winner caps at capacity, loser floors at 0.
-	if _, err := world.battlefields.InsertOne(ctx, Battlefield{AreaID: 1, MapID: 1, Capacity: 100, OccA: 90, OccC: 10}); err != nil {
-		t.Fatalf("seed bf2: %v", err)
-	}
-	if err := world.ApplyBattleOccupation(ctx, 1, 1, 'A', 'C', 50); err != nil {
+	// The lock holds while C is short of the threshold, then a sweep at/after it reopens the battlefield.
+	if err := world.UnlockExpiredBattlefields(ctx, 'C', 9); err != nil {
 		t.Fatal(err)
 	}
-	if bf, _ := world.BattlefieldByAreaMap(ctx, 1, 1); bf == nil || bf.OccA != 100 || bf.OccC != 0 {
-		t.Errorf("clamp = %+v, want occA=100 occC=0", bf)
+	if bf, _ := world.BattlefieldByAreaMap(ctx, 20, 2); bf == nil || !bf.Locked {
+		t.Errorf("battlefield should stay locked at C count 9: %+v", bf)
+	}
+	if err := world.UnlockExpiredBattlefields(ctx, 'C', 10); err != nil {
+		t.Fatal(err)
+	}
+	if bf, _ := world.BattlefieldByAreaMap(ctx, 20, 2); bf == nil || bf.Locked || bf.DefeatedNation != "" || bf.UnlockAtBattle != 0 {
+		t.Errorf("battlefield should reopen (lock cleared) at C count 10: %+v", bf)
+	}
+
+	// --- battle counter (drives the unlock clock) ---
+	if _, err := world.nations.InsertOne(ctx, NationRecord{CountryCode: "A"}); err != nil {
+		t.Fatalf("seed nation: %v", err)
+	}
+	if n, err := world.IncrementBattleCount(ctx, 'A'); err != nil || n != 1 {
+		t.Errorf("IncrementBattleCount #1 = %d, %v; want 1", n, err)
+	}
+	if n, _ := world.IncrementBattleCount(ctx, 'A'); n != 2 {
+		t.Errorf("IncrementBattleCount #2 = %d; want 2", n)
+	}
+	if n, _ := world.NationBattleCount(ctx, 'A'); n != 2 {
+		t.Errorf("NationBattleCount = %d; want 2", n)
 	}
 
 	// --- squad-stat accumulation ---

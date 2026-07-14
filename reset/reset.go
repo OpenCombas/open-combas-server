@@ -24,6 +24,7 @@ const (
 	battlefieldsCollection = "battlefields"
 	eventsCollection       = "events"
 	capturesCollection     = "captureContributions"
+	nationsCollection      = "nations"
 
 	// defaultCapturePoints is the occupation-pool capacity used for a battlefield whose real capture
 	// points aren't known yet (known_occ_points lists a 0 for those).
@@ -240,7 +241,13 @@ func resetBattlefields(ctx context.Context, store *persistence.Store, downscale 
 	for i, d := range docs {
 		anyDocs[i] = d
 	}
-	_, err := coll.InsertMany(ctx, anyDocs)
+	if _, err := coll.InsertMany(ctx, anyDocs); err != nil {
+		return err
+	}
+	// Fresh battlefields start unlocked (no lock fields), so zero the per-nation battle counter that
+	// drives the capture-lock clock -- otherwise a stale count from the prior war leaves the unlock
+	// thresholds reading from an arbitrary baseline.
+	_, err := store.Collection(nationsCollection).UpdateMany(ctx, bson.M{}, bson.M{"$set": bson.M{"battleCount": int32(0)}})
 	return err
 }
 

@@ -135,7 +135,12 @@ func main() {
 		occ[idx] = b.Capacity * int32(*level) / 100
 		if _, err := coll.UpdateOne(ctx,
 			bson.M{"areaId": b.AreaID, "mapId": b.MapID},
-			bson.M{"$set": bson.M{"occA": occ[0], "occB": occ[1], "occC": occ[2]}},
+			// Clear any capture lock so an admin override always leaves the battlefield contestable
+			// again (this tool is for setting up test scenarios, not for locking anything out).
+			bson.M{
+				"$set":   bson.M{"occA": occ[0], "occB": occ[1], "occC": occ[2], "locked": false},
+				"$unset": bson.M{"defeatedNation": "", "unlockAtBattle": ""},
+			},
 		); err != nil {
 			logging.Error.Fatalf("[CAPTURE] update area %d/%d failed: %v", b.AreaID, b.MapID, err)
 		}

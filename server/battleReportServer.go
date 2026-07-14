@@ -120,25 +120,20 @@ func (s *battleReportServer) ingest(packet []byte) {
 	defer cancel()
 
 	if s.worldRepo != nil {
-		// Snapshot state just before the update so we can detect transitions this battle caused:
-		// per-nation area control (elimination) and the fought area/battlefield lead (captures). Only needed
-		// when generating events -- skip the extra reads when the toggle is off.
-		var before map[byte]int
-		var beforeOwner, beforeLead byte
-		if s.generateEvents {
-			before, _ = s.worldRepo.NationAreaCounts(ctx)
-			beforeOwner, beforeLead, _ = s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
-		}
-		if err := s.worldRepo.ApplyBattleOccupation(ctx, res.AreaID, res.MapID, res.WinnerNation, res.LoserNation, res.OccDelta); err != nil {
-			logging.Warn.Printf("[%s] occupation update failed: %v", s.serverConfig.Label, err)
-		} else if s.generateEvents {
-			// Credit the winning squad's capture-points ledger for this battlefield (backs |s2=).
-			if err := s.worldRepo.CreditCapture(ctx, int32(res.AreaID), int32(res.MapID), res.WinnerTeam, res.OccDelta); err != nil {
-				logging.Warn.Printf("[%s] capture-ledger credit failed: %v", s.serverConfig.Label, err)
-			}
-			s.maybeRecordConquest(ctx, res, before)
-			afterOwner, afterLead, _ := s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
-			s.maybeRecordCaptures(ctx, res, beforeOwner, beforeLead, afterOwner, afterLead)
+		bf, err := s.worldRepo.BattlefieldByAreaMap(ctx, res.AreaID, res.MapID)
+		switch {
+		case err != nil:
+			logging.Warn.Printf("[%s] battlefield %d/%d read failed: %v", s.serverConfig.Label, res.AreaID, res.MapID, err)
+		case bf == nil:
+			logging.Warn.Printf("[%s] battle report for unknown battlefield %d/%d, acking without ingest", s.serverConfig.Label, res.AreaID, res.MapID)
+		case bf.Locked:
+			// A locked battlefield accepts no missions, so a report for one is spurious: ignore it
+			// entirely (no occupation, no counters, no squad renown) rather than let a stray packet
+			// overwrite the capture that locked it.
+			logging.Info.Printf("[%s] battlefield %d/%d locked (defeated %s, unlock@%d); ignoring report", s.serverConfig.Label, res.AreaID, res.MapID, bf.DefeatedNation, bf.UnlockAtBattle)
+			return
+		default:
+			s.applyBattle(ctx, res, *bf)
 		}
 	}
 	if s.squadRepo != nil {
@@ -148,6 +143,87 @@ func (s *battleReportServer) ingest(packet []byte) {
 	}
 	logging.Info.Printf("[%s] area %d/%d: winner %c/%s (+%d occ, +%d renown) vs %c/%s",
 		s.serverConfig.Label, res.AreaID, res.MapID, res.WinnerNation, res.WinnerTeam, res.OccDelta, res.WinnerMerit, res.LoserNation, res.LoserTeam)
+}
+
+// applyBattle applies one battle report to the world under the winner-takes-all capture model:
+//   - both combatants' battle counters advance (the unlock clock for locked battlefields);
+//   - a change of holder flips the fought battlefield 100% to the winner and locks out the loser;
+//   - if that flips the area's owner, the whole area is surrendered (every battlefield flips + locks);
+//   - reaching a nation's unlock threshold reopens the battlefields it had lost.
+//
+// A successful defence (the winner already held the battlefield) changes no occupation and issues no
+// lock -- only the counters advance. Capture/region/conquest events fire only on a genuine change of
+// hands.
+func (s *battleReportServer) applyBattle(ctx context.Context, res BattleResult, bf Battlefield) {
+	beforeLead := bfLead(bf)
+	changedHands := beforeLead != 0 && res.WinnerNation != beforeLead
+
+	// Area owner before the battle -- needed to detect an area surrender and to fire region events.
+	var before map[byte]int
+	var beforeOwner byte
+	if s.generateEvents {
+		before, _ = s.worldRepo.NationAreaCounts(ctx)
+		beforeOwner, _, _ = s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
+	}
+
+	// Both nations fought a battle: advance their counters. This is the "10 other battles across all
+	// areas" clock that eventually reopens battlefields each has lost.
+	winnerCount, err := s.worldRepo.IncrementBattleCount(ctx, res.WinnerNation)
+	if err != nil {
+		logging.Warn.Printf("[%s] battle-count bump (winner %c) failed: %v", s.serverConfig.Label, res.WinnerNation, err)
+	}
+	loserCount, err := s.worldRepo.IncrementBattleCount(ctx, res.LoserNation)
+	if err != nil {
+		logging.Warn.Printf("[%s] battle-count bump (loser %c) failed: %v", s.serverConfig.Label, res.LoserNation, err)
+	}
+
+	if changedHands {
+		// Flip the battlefield to the winner and lock out the former holder until it fights
+		// UnlockBattleThreshold more battles. The former holder is normally the losing combatant.
+		defeated := beforeLead
+		defeatedCount := loserCount
+		if defeated != res.LoserNation {
+			defeatedCount, _ = s.worldRepo.NationBattleCount(ctx, defeated)
+		}
+		if err := s.worldRepo.CaptureBattlefield(ctx, int32(res.AreaID), int32(res.MapID), res.WinnerNation, defeated, defeatedCount+UnlockBattleThreshold); err != nil {
+			logging.Warn.Printf("[%s] capture flip %d/%d failed: %v", s.serverConfig.Label, res.AreaID, res.MapID, err)
+		}
+	}
+
+	// This battle may have carried either nation past a lock it was waiting out.
+	if err := s.worldRepo.UnlockExpiredBattlefields(ctx, res.WinnerNation, winnerCount); err != nil {
+		logging.Warn.Printf("[%s] unlock sweep (%c) failed: %v", s.serverConfig.Label, res.WinnerNation, err)
+	}
+	if err := s.worldRepo.UnlockExpiredBattlefields(ctx, res.LoserNation, loserCount); err != nil {
+		logging.Warn.Printf("[%s] unlock sweep (%c) failed: %v", s.serverConfig.Label, res.LoserNation, err)
+	}
+
+	if !s.generateEvents {
+		return
+	}
+
+	// Credit the winning squad's ledger (backs the |s2= "top squad of the capturing nation"), for
+	// defences as well as captures so the ranking reflects all of a nation's activity in the area.
+	if err := s.worldRepo.CreditCapture(ctx, int32(res.AreaID), int32(res.MapID), res.WinnerTeam, string(res.WinnerNation), res.OccDelta); err != nil {
+		logging.Warn.Printf("[%s] capture-ledger credit failed: %v", s.serverConfig.Label, err)
+	}
+	if !changedHands {
+		return // a defence flips nothing -> no capture/region/conquest events
+	}
+
+	s.maybeRecordConquest(ctx, res, before)
+	afterOwner, afterLead, _ := s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
+
+	// Area surrender: this capture flipped the area's owner, so the losing nation gives up the whole
+	// area -- every battlefield flips to the new owner and locks against the surrendering nation.
+	if beforeOwner != 0 && afterOwner != 0 && beforeOwner != afterOwner {
+		surCount, _ := s.worldRepo.NationBattleCount(ctx, beforeOwner)
+		if err := s.worldRepo.FlipAndLockArea(ctx, int32(res.AreaID), afterOwner, beforeOwner, surCount+UnlockBattleThreshold); err != nil {
+			logging.Warn.Printf("[%s] area surrender flip (area %d) failed: %v", s.serverConfig.Label, res.AreaID, err)
+		}
+	}
+
+	s.maybeRecordCaptures(ctx, res, beforeOwner, beforeLead, afterOwner, afterLead)
 }
 
 // dissolutionRow maps an eliminated nation + its conqueror to the exact "Nation Dissolved" param row in
@@ -234,7 +310,7 @@ func (s *battleReportServer) maybeRecordCaptures(ctx context.Context, res Battle
 	now := time.Now().Unix()
 	// Battlefield captured: the fought battlefield's lead nation changed.
 	if beforeLead != 0 && afterLead != 0 && beforeLead != afterLead {
-		teamID, _ := s.worldRepo.TopSquadForBattlefield(ctx, int32(res.AreaID), int32(res.MapID))
+		teamID, _ := s.worldRepo.TopSquadForBattlefield(ctx, int32(res.AreaID), int32(res.MapID), string(afterLead))
 		squad := s.squadDisplayName(ctx, teamID)
 		if row, err := RecordBattlefieldCaptureEvent(ctx, s.worldRepo, int32(res.AreaID), int32(res.MapID), beforeLead, afterLead, squad, now); err != nil {
 			logging.Warn.Printf("[%s] record battlefield-capture event failed: %v", s.serverConfig.Label, err)
@@ -244,7 +320,7 @@ func (s *battleReportServer) maybeRecordCaptures(ctx context.Context, res Battle
 	}
 	// Region captured: the AREA's owner changed (RecordRegionCaptureEvent skips HQ flips = dissolution).
 	if beforeOwner != 0 && afterOwner != 0 && beforeOwner != afterOwner {
-		teamID, _ := s.worldRepo.TopSquadForRegion(ctx, int32(res.AreaID))
+		teamID, _ := s.worldRepo.TopSquadForRegion(ctx, int32(res.AreaID), string(afterOwner))
 		squad := s.squadDisplayName(ctx, teamID)
 		if row, err := RecordRegionCaptureEvent(ctx, s.worldRepo, int32(res.AreaID), beforeOwner, afterOwner, squad, now); err != nil {
 			logging.Warn.Printf("[%s] record region-capture event failed: %v", s.serverConfig.Label, err)

@@ -58,7 +58,18 @@ type Battlefield struct {
 	OccA           int32 `bson:"occA"`           // Tarakia occupation level
 	OccB           int32 `bson:"occB"`           // Morskoj
 	OccC           int32 `bson:"occC"`           // Sal Kar
+	// Capture lock: a battlefield/area flips 100% to the winner on a change-of-hands and locks out the
+	// defeated nation (no missions there) until that nation has fought UnlockBattleThreshold other
+	// battles anywhere. This models the retail winner-takes-all mechanic that prevents occupation
+	// tug-of-war from dragging a season out. Unset (via omitempty) == contestable.
+	Locked         bool   `bson:"locked,omitempty"`
+	DefeatedNation string `bson:"defeatedNation,omitempty"` // "A"/"B"/"C" locked out of this battlefield
+	UnlockAtBattle int32  `bson:"unlockAtBattle,omitempty"` // DefeatedNation battleCount at which it reopens
 }
+
+// UnlockBattleThreshold is how many other battles the defeated nation must fight (anywhere, win or
+// lose) before a battlefield it lost reopens for missions.
+const UnlockBattleThreshold = 10
 
 // NationRecord is the stored per-faction economy/state shown on the World Situation screen. It mirrors
 // the meaningful NationData fields (the wire struct has pad bytes that don't belong in storage).
@@ -80,6 +91,7 @@ type NationRecord struct {
 	PresidentID       int32   `bson:"presidentId"`
 	Unknown57         int32   `bson:"unknown57"`
 	DeadFlag          int32   `bson:"deadFlag"`
+	BattleCount       int32   `bson:"battleCount,omitempty"` // battles this nation has fought; drives the capture-lock clock
 }
 
 // WorldRepository reads/writes the war-state collections on the shared MongoDB.
@@ -100,33 +112,36 @@ func NewWorldRepository(store *persistence.Store) *WorldRepository {
 }
 
 // captureContribution accumulates one squad's capture points on one battlefield. It backs the |s2=
-// "most-involved squad" placeholder in region/battlefield capture news events.
+// "most-involved squad" placeholder in region/battlefield capture news events. Nation ("A"/"B"/"C") is the
+// side the squad fought FOR (the battle winner's nation), so a capture event can surface the top squad of the
+// CAPTURING nation rather than the all-time leader (which is often a rival that won this battlefield earlier).
 type captureContribution struct {
 	AreaID int32  `bson:"areaId"`
 	MapID  int32  `bson:"mapId"`
 	Squad  string `bson:"squad"`
+	Nation string `bson:"nation,omitempty"`
 	Points int64  `bson:"points"`
 }
 
-// CreditCapture adds a squad's capture points (== battle OccDelta) on a battlefield. No-op for an empty
-// squad or non-positive points.
-func (r *WorldRepository) CreditCapture(ctx context.Context, areaID, mapID int32, squad string, points int32) error {
+// CreditCapture adds a squad's capture points (== battle OccDelta) on a battlefield for the nation it fought
+// for. No-op for an empty squad or non-positive points.
+func (r *WorldRepository) CreditCapture(ctx context.Context, areaID, mapID int32, squad, nation string, points int32) error {
 	if squad == "" || points <= 0 {
 		return nil
 	}
 	_, err := r.captures.UpdateOne(ctx,
 		bson.M{"areaId": areaID, "mapId": mapID, "squad": squad},
-		bson.M{"$inc": bson.M{"points": int64(points)}},
+		bson.M{"$inc": bson.M{"points": int64(points)}, "$set": bson.M{"nation": nation}},
 		options.UpdateOne().SetUpsert(true))
 	return err
 }
 
-// TopSquadForBattlefield returns the squad with the most accumulated capture points on a battlefield
-// (empty string if none).
-func (r *WorldRepository) TopSquadForBattlefield(ctx context.Context, areaID, mapID int32) (string, error) {
+// TopSquadForBattlefield returns the given NATION's squad with the most accumulated capture points on a
+// battlefield (empty string if none). Filtering by nation keeps the |s2= squad on the capturing side.
+func (r *WorldRepository) TopSquadForBattlefield(ctx context.Context, areaID, mapID int32, nation string) (string, error) {
 	var c captureContribution
 	err := r.captures.FindOne(ctx,
-		bson.M{"areaId": areaID, "mapId": mapID},
+		bson.M{"areaId": areaID, "mapId": mapID, "nation": nation},
 		options.FindOne().SetSort(bson.D{{Key: "points", Value: -1}})).Decode(&c)
 	if err == mongo.ErrNoDocuments {
 		return "", nil
@@ -134,9 +149,10 @@ func (r *WorldRepository) TopSquadForBattlefield(ctx context.Context, areaID, ma
 	return c.Squad, err
 }
 
-// TopSquadForRegion returns the squad with the most capture points summed across an area's battlefields.
-func (r *WorldRepository) TopSquadForRegion(ctx context.Context, areaID int32) (string, error) {
-	cur, err := r.captures.Find(ctx, bson.M{"areaId": areaID})
+// TopSquadForRegion returns the given NATION's squad with the most capture points summed across an area's
+// battlefields.
+func (r *WorldRepository) TopSquadForRegion(ctx context.Context, areaID int32, nation string) (string, error) {
+	cur, err := r.captures.Find(ctx, bson.M{"areaId": areaID, "nation": nation})
 	if err != nil {
 		return "", err
 	}
@@ -311,25 +327,98 @@ func occField(nation byte) string {
 	return ""
 }
 
-// ApplyBattleOccupation moves occupation on one battlefield after a battle: the winning nation gains
-// `delta` (capped at capacity), the losing nation loses `delta` (floored at 0). Atomic clamp via a
-// pipeline update. A no-op when the winner nation is unknown or delta is 0.
-func (r *WorldRepository) ApplyBattleOccupation(ctx context.Context, areaID, mapID, winnerNation, loserNation byte, delta int32) error {
-	winField, loseField := occField(winnerNation), occField(loserNation)
-	if winField == "" || delta == 0 {
+// bfLead returns the nation ('A'/'B'/'C') that holds a battlefield, or 0 if none has any occupation.
+// Under the winner-takes-all capture model a held battlefield sits at 100% for exactly one nation.
+func bfLead(b Battlefield) byte {
+	idx, level := leadFaction(b.OccA, b.OccB, b.OccC)
+	if level == 0 {
+		return 0
+	}
+	return nationChar(idx)
+}
+
+// captureSet builds the pipeline $set that flips a battlefield 100% to `winner` and locks out
+// `defeated` until that nation reaches `unlockAt` battles. The winner's occ field is set to the
+// battlefield's own capacity (a "$capacity" field reference), the other two to zero.
+func captureSet(winner, defeated byte, unlockAt int32) bson.M {
+	occ := func(n byte) interface{} {
+		if n == winner {
+			return "$capacity"
+		}
+		return int32(0)
+	}
+	return bson.M{
+		"occA": occ('A'), "occB": occ('B'), "occC": occ('C'),
+		"locked": true, "defeatedNation": string(defeated), "unlockAtBattle": unlockAt,
+	}
+}
+
+// CaptureBattlefield flips one battlefield 100% to the winning nation and locks out the defeated
+// nation until it has fought `unlockAt` battles. Used when a battle changes a battlefield's holder.
+func (r *WorldRepository) CaptureBattlefield(ctx context.Context, areaID, mapID int32, winner, defeated byte, unlockAt int32) error {
+	if occField(winner) == "" {
 		return nil
 	}
-	set := bson.M{
-		winField: bson.M{"$min": bson.A{bson.M{"$add": bson.A{"$" + winField, delta}}, "$capacity"}},
-	}
-	if loseField != "" && loseField != winField {
-		set[loseField] = bson.M{"$max": bson.A{bson.M{"$subtract": bson.A{"$" + loseField, delta}}, int32(0)}}
-	}
 	_, err := r.battlefields.UpdateOne(ctx,
-		bson.M{"areaId": int32(areaID), "mapId": int32(mapID)},
-		mongo.Pipeline{{{Key: "$set", Value: set}}},
+		bson.M{"areaId": areaID, "mapId": mapID},
+		mongo.Pipeline{{{Key: "$set", Value: captureSet(winner, defeated, unlockAt)}}},
 	)
 	return err
+}
+
+// FlipAndLockArea flips every battlefield in an area 100% to the winning nation and locks the whole
+// area against the defeated (surrendering) nation. Used when a battlefield capture flips the area
+// owner: the retail behaviour is that the loser surrenders the entire area, not just the fought map.
+func (r *WorldRepository) FlipAndLockArea(ctx context.Context, areaID int32, winner, defeated byte, unlockAt int32) error {
+	if occField(winner) == "" {
+		return nil
+	}
+	_, err := r.battlefields.UpdateMany(ctx,
+		bson.M{"areaId": areaID},
+		mongo.Pipeline{{{Key: "$set", Value: captureSet(winner, defeated, unlockAt)}}},
+	)
+	return err
+}
+
+// UnlockExpiredBattlefields reopens every battlefield locked against `nation` whose unlock threshold
+// has been reached (that nation's battleCount is now >= unlockAtBattle). Clears the lock fields.
+func (r *WorldRepository) UnlockExpiredBattlefields(ctx context.Context, nation byte, count int32) error {
+	_, err := r.battlefields.UpdateMany(ctx,
+		bson.M{"defeatedNation": string(nation), "locked": true, "unlockAtBattle": bson.M{"$lte": count}},
+		bson.M{"$set": bson.M{"locked": false}, "$unset": bson.M{"defeatedNation": "", "unlockAtBattle": ""}},
+	)
+	return err
+}
+
+// IncrementBattleCount bumps a nation's fought-battle counter and returns the new value. Returns
+// (0, nil) for an unknown nation. This counter drives the capture-lock clock (UnlockBattleThreshold).
+func (r *WorldRepository) IncrementBattleCount(ctx context.Context, nation byte) (int32, error) {
+	var rec NationRecord
+	err := r.nations.FindOneAndUpdate(ctx,
+		bson.M{"countryCode": string(nation)},
+		bson.M{"$inc": bson.M{"battleCount": int32(1)}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&rec)
+	if err == mongo.ErrNoDocuments {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return rec.BattleCount, nil
+}
+
+// NationBattleCount reads a nation's current fought-battle counter (0 if unknown).
+func (r *WorldRepository) NationBattleCount(ctx context.Context, nation byte) (int32, error) {
+	var rec NationRecord
+	err := r.nations.FindOne(ctx, bson.M{"countryCode": string(nation)}).Decode(&rec)
+	if err == mongo.ErrNoDocuments {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return rec.BattleCount, nil
 }
 
 // BattlefieldsGrouped returns every battlefield keyed by area id (sorted by map id within each area).
@@ -527,6 +616,10 @@ func leadFaction(a, b, c int32) (idx int, level int32) {
 
 func (b Battlefield) toAreaMapRecord() AreaMapRecord {
 	leader, level := leadFaction(b.OccA, b.OccB, b.OccC)
+	var lock byte
+	if b.Locked {
+		lock = 1 // マップロックフラグ: tells the client this battlefield is closed to missions
+	}
 	return AreaMapRecord{
 		MapID:              int16(b.MapID),
 		ControllingFaction: nationChar(leader),
@@ -536,6 +629,7 @@ func (b Battlefield) toAreaMapRecord() AreaMapRecord {
 		InvasionA:          b.OccA,
 		InvasionB:          b.OccB,
 		InvasionC:          b.OccC,
+		MapLockFlag:        lock,
 	}
 }
 
