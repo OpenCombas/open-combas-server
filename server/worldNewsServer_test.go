@@ -71,16 +71,45 @@ func TestBriefingNeverEmpty(t *testing.T) {
 	}
 }
 
-func TestParseNewsPage(t *testing.T) {
-	// Request body is "<gamertag>,<nation>,<page>" -- the 3rd field is a 1-based page index.
-	if p := parseNewsPage(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,1")); p != 1 {
-		t.Errorf("page = %d, want 1", p)
+func TestParseNewsRequest(t *testing.T) {
+	// Request body is "<gamertag>,<nation>,<category>": category 1 = political, 2 = war.
+	if n, c := parseNewsRequest(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,1")); n != 'A' || c != newsCategoryPolitical {
+		t.Errorf("nation/category = %q/%d, want 'A'/1", n, c)
 	}
-	if p := parseNewsPage(makeRequestPacket(squadXuid, [8]byte{}, "player1,A,2")); p != 2 {
-		t.Errorf("page = %d, want 2", p)
+	if n, c := parseNewsRequest(makeRequestPacket(squadXuid, [8]byte{}, "player1,B,2")); n != 'B' || c != newsCategoryWar {
+		t.Errorf("nation/category = %q/%d, want 'B'/2", n, c)
 	}
-	if p := parseNewsPage(makeRequestPacket(squadXuid, [8]byte{}, "player1")); p != 1 {
-		t.Errorf("missing page -> %d, want default 1", p)
+	if n, c := parseNewsRequest(makeRequestPacket(squadXuid, [8]byte{}, "player1")); n != 0 || c != newsCategoryPolitical {
+		t.Errorf("missing fields -> %q/%d, want 0/default 1", n, c)
+	}
+}
+
+func TestFilterNewsByCategory(t *testing.T) {
+	evs := []EventRecord{
+		{TemplateID: 1},  // dissolution -> war
+		{TemplateID: 35}, // battlefield capture -> war
+		{TemplateID: 75}, // "War Breaks Out" briefing -> excluded from both (fallback only)
+		{TemplateID: 41}, // president takes office -> political
+		{TemplateID: 69}, // massive donation -> political
+	}
+	war := filterNewsByCategory(evs, 'A', newsCategoryWar)
+	if len(war) != 2 {
+		t.Errorf("war news = %d events, want 2 (rows 1/35; briefing 75 excluded)", len(war))
+	}
+	for _, e := range war {
+		if !newsRowIsWar(e.TemplateID) {
+			t.Errorf("row %d classed as war but isn't", e.TemplateID)
+		}
+	}
+	poli := filterNewsByCategory(evs, 'A', newsCategoryPolitical)
+	if len(poli) != 2 {
+		t.Errorf("political news = %d events, want 2 (rows 41/69)", len(poli))
+	}
+	// The briefing must not appear in either domain feed.
+	for _, e := range append(war, poli...) {
+		if e.TemplateID == 75 {
+			t.Error("briefing (row 75) leaked into a domain feed; it should be fallback-only")
+		}
 	}
 }
 

@@ -16,29 +16,79 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// News request body is "<gamertag>,<nation>,<page>" (RE: the 3rd field is a 1-based PAGE index, not a
-// category). The client's login "news flash" fetches page 1 THEN page 2 and APPENDS both into one scroll
-// list, so each page must return a DISTINCT slice -- page N = the Nth block of newsPageSize events, newest
-// first. Returning identical content for two pages double-renders the login popup. A page past the end is a
-// valid EMPTY terminator (count 0 is graceful client-side); we keep the full 1568B layout on every page.
-const newsPageSize = 20 // 2 blocks x 10 entries
+// News request body is "<gamertag>,<nation>,<category>". The 3rd field selects a news DOMAIN, not a page:
+// category 1 = POLITICAL (government stories, scoped to the requesting nation) and category 2 = WAR
+// (battlefront stories, global to all nations). The client's login flash fetches BOTH and appends them
+// into one list, so each must return a DISJOINT set or the flash double-renders. Splitting by domain makes
+// them disjoint (a story is war OR political). News History reads category 2's cached reply, which is why
+// the war/capture stories must live in category 2. (An earlier reading took the field as a page index and
+// returned identical slices for 1/2 -- that double-rendered every event; category-agnostic did the same.)
+const (
+	newsPageSize = 20 // 2 blocks x 10 entries; the wire cap per reply
 
-// parseNewsPage extracts the 1-based page (the 3rd comma-separated field) from a news request; default 1.
-func parseNewsPage(packet []byte) int {
+	// newsCategoryPolitical / newsCategoryWar are the two request domains (the request's 3rd field).
+	newsCategoryPolitical = 1
+	newsCategoryWar       = 2
+
+	// newsFilterReadLimit reads more than one page so category filtering can still fill a page.
+	newsFilterReadLimit = 60
+)
+
+// parseNewsRequest extracts the requesting nation ('A'/'B'/'C', 2nd field) and the news category (3rd
+// field, default political=1) from a news request body.
+func parseNewsRequest(packet []byte) (nation byte, category int) {
+	category = newsCategoryPolitical
 	if len(packet) <= constants.MinHelloMessageSize {
-		return 1
+		return 0, category
 	}
 	body := packet[constants.MinHelloMessageSize:]
 	if i := bytes.IndexByte(body, 0); i >= 0 {
 		body = body[:i]
 	}
 	parts := strings.Split(string(body), ",")
-	if len(parts) >= 3 {
-		if v, err := strconv.Atoi(strings.TrimSpace(parts[2])); err == nil && v >= 1 {
-			return v
+	if len(parts) >= 2 {
+		if n := strings.TrimSpace(parts[1]); len(n) == 1 && n[0] >= 'A' && n[0] <= 'C' {
+			nation = n[0]
 		}
 	}
-	return 1
+	if len(parts) >= 3 {
+		if v, err := strconv.Atoi(strings.TrimSpace(parts[2])); err == nil && v >= 1 {
+			category = v
+		}
+	}
+	return nation, category
+}
+
+// newsRowIsWar reports whether a WorldSituationInfoNewsParam row is a WAR/battlefront story (dissolutions,
+// revivals, conquests, peace accords, region/battlefield captures = rows 1-40). Everything else (rows
+// 41-74, 76+: presidents, budgets, donations, elections) is POLITICAL. The row-75 "War Breaks Out"
+// briefing belongs to neither feed -- it is the shared empty-fallback (see filterNewsByCategory).
+func newsRowIsWar(row int32) bool {
+	return row >= 1 && row <= 40
+}
+
+// filterNewsByCategory keeps only the events belonging to the requested domain. War news is global;
+// political news is scoped to the requesting nation. The "War Breaks Out" briefing is excluded from BOTH
+// domain feeds: it exists only as the empty-feed fallback (buildNews re-adds it when a category is empty),
+// so it never lands in both login responses and double-renders.
+func filterNewsByCategory(evs []EventRecord, nation byte, category int) []EventRecord {
+	out := make([]EventRecord, 0, len(evs))
+	for _, ev := range evs {
+		if ev.TemplateID == initEventRow {
+			continue // the briefing is the shared fallback, not a war or political story
+		}
+		war := newsRowIsWar(ev.TemplateID)
+		switch {
+		case category == newsCategoryWar && war:
+			out = append(out, ev)
+		case category == newsCategoryPolitical && !war:
+			// TODO: political news is nation-scoped -- filter by the event's nation once political events
+			// (donations/elections) carry one. None are generated yet, so this branch is currently empty.
+			_ = nation
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 // World Situation NEWS response.
@@ -190,24 +240,28 @@ type worldNewsServer struct {
 // (title sub_8242FBE0) copies over the cache -- so category 2 MUST carry the events, not an empty terminator.
 // The briefing fallback keeps the reply non-zero-count (a zero-count reply is rejected as "communication
 // failed"), matching the pre-dynamic-events static news that always returned a non-empty board.
-func (s *worldNewsServer) buildNews(hi UserHelloMessage, category int) NewsState {
+func (s *worldNewsServer) buildNews(hi UserHelloMessage, nation byte, category int) NewsState {
 	var evs []EventRecord
 	// With event generation disabled the board shows only the briefing; we never read the feed, so any
 	// stale/generated events sitting in the DB stay hidden. Falls through to the empty-feed briefing below.
 	if s.repo != nil && s.generateEvents {
 		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 		defer cancel()
-		got, err := s.repo.RecentEventsPage(readCtx, 0, newsPageSize)
+		// Read a window wider than one page so, after dropping the other domain's events, we can still
+		// fill a page of this category.
+		got, err := s.repo.RecentEventsPage(readCtx, 0, newsFilterReadLimit)
 		if err != nil {
 			logging.Warn.Printf("[%s] events read failed, using briefing: %v", s.serverConfig.Label, err)
 		} else {
-			evs = got
+			evs = filterNewsByCategory(got, nation, category)
 		}
 	}
+	// A zero-count reply is rejected client-side as "communication failed", so an empty category still
+	// serves the briefing. (Until political events are generated, the political category is always empty
+	// and thus shows the briefing -- see the category-split note above.)
 	if len(evs) == 0 {
 		evs = []EventRecord{briefingEvent(time.Now().Unix())}
 	}
-	_ = category // both categories serve the same newest feed (see above)
 	return newsFromEvents(hi.Xuid, hi.Order, evs)
 }
 
@@ -230,7 +284,8 @@ func NewWorldNewsServer(listenAddress net.IP, serverConfig config.EventServerCon
 		// buildResponse (not buildPayload) so we can read the request's page field.
 		buildResponse: func(readBuffer *[]byte) (*[]byte, error) {
 			hi := s.parseHelloMessage(readBuffer)
-			resp := s.buildNews(hi, parseNewsPage(*readBuffer))
+			nation, category := parseNewsRequest(*readBuffer)
+			resp := s.buildNews(hi, nation, category)
 			buf := make([]byte, constants.NewsResponseSize)
 			if _, err := binary.Encode(buf, binary.LittleEndian, resp); err != nil {
 				return nil, err
