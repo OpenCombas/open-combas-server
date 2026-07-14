@@ -234,32 +234,63 @@ func (s *battleReportServer) maybeRecordCaptures(ctx context.Context, res Battle
 	now := time.Now().Unix()
 	// Battlefield captured: the fought battlefield's lead nation changed.
 	if beforeLead != 0 && afterLead != 0 && beforeLead != afterLead {
-		if row, ok := battlefieldCaptureRow(beforeLead); ok {
-			teamID, _ := s.worldRepo.TopSquadForBattlefield(ctx, int32(res.AreaID), int32(res.MapID))
-			squad := s.squadDisplayName(ctx, teamID)
-			// slot1 = |B1 battlefield name TEXT ID (client resolves it), slot2 = |s2= most-involved squad.
-			ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: battlefieldNameSlot(int32(res.AreaID), int32(res.MapID)), Slot2: squad}
-			if err := s.worldRepo.RecordEvent(ctx, ev); err != nil {
-				logging.Warn.Printf("[%s] record battlefield-capture event failed: %v", s.serverConfig.Label, err)
-			} else {
-				logging.Info.Printf("[%s] EVENT: battlefield %q (%d/%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, battlefieldName(int32(res.AreaID), int32(res.MapID)), res.AreaID, res.MapID, beforeLead, afterLead, squad, row)
-			}
+		teamID, _ := s.worldRepo.TopSquadForBattlefield(ctx, int32(res.AreaID), int32(res.MapID))
+		squad := s.squadDisplayName(ctx, teamID)
+		if row, err := RecordBattlefieldCaptureEvent(ctx, s.worldRepo, int32(res.AreaID), int32(res.MapID), beforeLead, afterLead, squad, now); err != nil {
+			logging.Warn.Printf("[%s] record battlefield-capture event failed: %v", s.serverConfig.Label, err)
+		} else if row != 0 {
+			logging.Info.Printf("[%s] EVENT: battlefield %q (%d/%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, battlefieldName(int32(res.AreaID), int32(res.MapID)), res.AreaID, res.MapID, beforeLead, afterLead, squad, row)
 		}
 	}
-	// Region captured: the fought AREA's owner changed and it is a non-HQ region (HQ flips = dissolution).
-	if beforeOwner != 0 && afterOwner != 0 && beforeOwner != afterOwner && !isHQ(res.AreaID) {
-		if row, ok := regionCaptureRow(beforeOwner); ok {
-			teamID, _ := s.worldRepo.TopSquadForRegion(ctx, int32(res.AreaID))
-			squad := s.squadDisplayName(ctx, teamID)
-			// slot1 = |A1= region name TEXT ID (client resolves it), slot2 = |s2= most-involved squad.
-			ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: areaNameSlot(int32(res.AreaID)), Slot2: squad}
-			if err := s.worldRepo.RecordEvent(ctx, ev); err != nil {
-				logging.Warn.Printf("[%s] record region-capture event failed: %v", s.serverConfig.Label, err)
-			} else {
-				logging.Info.Printf("[%s] EVENT: region %q (%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, areaName(int32(res.AreaID)), res.AreaID, beforeOwner, afterOwner, squad, row)
-			}
+	// Region captured: the AREA's owner changed (RecordRegionCaptureEvent skips HQ flips = dissolution).
+	if beforeOwner != 0 && afterOwner != 0 && beforeOwner != afterOwner {
+		teamID, _ := s.worldRepo.TopSquadForRegion(ctx, int32(res.AreaID))
+		squad := s.squadDisplayName(ctx, teamID)
+		if row, err := RecordRegionCaptureEvent(ctx, s.worldRepo, int32(res.AreaID), beforeOwner, afterOwner, squad, now); err != nil {
+			logging.Warn.Printf("[%s] record region-capture event failed: %v", s.serverConfig.Label, err)
+		} else if row != 0 {
+			logging.Info.Printf("[%s] EVENT: region %q (%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, areaName(int32(res.AreaID)), res.AreaID, beforeOwner, afterOwner, squad, row)
 		}
 	}
+}
+
+// RecordBattlefieldCaptureEvent writes a "X Surrenders Battlefield" WORLD_NEWS event when a battlefield's
+// lead nation changed (beforeLead -> afterLead, both non-zero and different). squad is the pre-resolved |s2=
+// name (may be ""). Returns the param row written (0 = no event). Shared by the battle-report ingest and the
+// admin capture tool (cmd/capture) so both produce identical news.
+func RecordBattlefieldCaptureEvent(ctx context.Context, repo *WorldRepository, areaID, mapID int32, beforeLead, afterLead byte, squad string, now int64) (int32, error) {
+	if beforeLead == 0 || afterLead == 0 || beforeLead == afterLead {
+		return 0, nil
+	}
+	row, ok := battlefieldCaptureRow(beforeLead)
+	if !ok {
+		return 0, nil
+	}
+	// slot1 = |B1 battlefield name TEXT ID (client resolves it), slot2 = |s2= most-involved squad.
+	ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: battlefieldNameSlot(areaID, mapID), Slot2: squad}
+	if err := repo.RecordEvent(ctx, ev); err != nil {
+		return 0, err
+	}
+	return row, nil
+}
+
+// RecordRegionCaptureEvent writes an "X Abandons <region>" WORLD_NEWS event when a NON-HQ area's owner
+// changed (beforeOwner -> afterOwner). squad = |s2=. Returns the row written (0 = no event; HQ flips return 0
+// -- those are a dissolution, handled separately). Shared by the battle-report ingest and cmd/capture.
+func RecordRegionCaptureEvent(ctx context.Context, repo *WorldRepository, areaID int32, beforeOwner, afterOwner byte, squad string, now int64) (int32, error) {
+	if beforeOwner == 0 || afterOwner == 0 || beforeOwner == afterOwner || isHQ(byte(areaID)) {
+		return 0, nil
+	}
+	row, ok := regionCaptureRow(beforeOwner)
+	if !ok {
+		return 0, nil
+	}
+	// slot1 = |A1= region name TEXT ID (client resolves it), slot2 = |s2= most-involved squad.
+	ev := EventRecord{CreatedAt: now, TemplateID: row, Slot1: areaNameSlot(areaID), Slot2: squad}
+	if err := repo.RecordEvent(ctx, ev); err != nil {
+		return 0, err
+	}
+	return row, nil
 }
 
 // maybeRecordConquest emits a nation-dissolved world event when this battle eliminated the losing nation

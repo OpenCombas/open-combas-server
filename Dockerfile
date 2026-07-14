@@ -13,6 +13,8 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/combas-server .
 # The out-of-band reset/init tool (run explicitly, e.g. `docker compose run --rm --entrypoint /app/reset combas-server -confirm`).
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reset ./cmd/reset
+# capture tool
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/capture ./cmd/capture
 
 # ---- runtime stage ----
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -20,6 +22,7 @@ WORKDIR /app
 
 COPY --from=build /out/combas-server /app/combas-server
 COPY --from=build /out/reset /app/reset
+COPY --from=build /out/capture /app/capture
 # Baked default config; MONGO_URI / MONGO_DATABASE / LISTENING_ADDRESS env vars override at runtime.
 COPY config.toml /app/config.toml
 
