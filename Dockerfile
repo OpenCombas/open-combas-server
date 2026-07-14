@@ -15,6 +15,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/combas-
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reset ./cmd/reset
 # capture tool
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/capture ./cmd/capture
+# sim tool
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/simulate ./cmd/simulate
 
 # ---- runtime stage ----
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -23,6 +25,8 @@ WORKDIR /app
 COPY --from=build /out/combas-server /app/combas-server
 COPY --from=build /out/reset /app/reset
 COPY --from=build /out/capture /app/capture
+COPY --from=build /out/simulate /app/simulate
+COPY --from=build /src/cmd/simulate/scenarios /app/
 # Baked default config; MONGO_URI / MONGO_DATABASE / LISTENING_ADDRESS env vars override at runtime.
 COPY config.toml /app/config.toml
 

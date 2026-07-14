@@ -92,6 +92,10 @@ type NationRecord struct {
 	Unknown57         int32   `bson:"unknown57"`
 	DeadFlag          int32   `bson:"deadFlag"`
 	BattleCount       int32   `bson:"battleCount,omitempty"` // battles this nation has fought; drives the capture-lock clock
+	// HQLostTo is set to the nation ('A'/'B'/'C') that captured this nation's capital when its HQ falls.
+	// While set the nation is "dissolved": it may only launch missions on its own HQ area until it
+	// recaptures it (which fires a revival event and clears this). "" == holding its capital.
+	HQLostTo string `bson:"hqLostTo,omitempty"`
 }
 
 // WorldRepository reads/writes the war-state collections on the shared MongoDB.
@@ -419,6 +423,75 @@ func (r *WorldRepository) NationBattleCount(ctx context.Context, nation byte) (i
 		return 0, err
 	}
 	return rec.BattleCount, nil
+}
+
+// SetNationHQLost marks a nation as dissolved (its capital fell to captor). ClearNationHQLost reverses
+// it on revival. NationHQLostTo reads the captor char (0 if the nation is not dissolved / unknown).
+func (r *WorldRepository) SetNationHQLost(ctx context.Context, nation, captor byte) error {
+	_, err := r.nations.UpdateOne(ctx,
+		bson.M{"countryCode": string(nation)},
+		bson.M{"$set": bson.M{"hqLostTo": string(captor)}})
+	return err
+}
+
+func (r *WorldRepository) ClearNationHQLost(ctx context.Context, nation byte) error {
+	_, err := r.nations.UpdateOne(ctx,
+		bson.M{"countryCode": string(nation)},
+		bson.M{"$unset": bson.M{"hqLostTo": ""}})
+	return err
+}
+
+func (r *WorldRepository) NationHQLostTo(ctx context.Context, nation byte) (byte, error) {
+	var rec NationRecord
+	err := r.nations.FindOne(ctx, bson.M{"countryCode": string(nation)}).Decode(&rec)
+	if err == mongo.ErrNoDocuments {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	if rec.HQLostTo == "" {
+		return 0, nil
+	}
+	return rec.HQLostTo[0], nil
+}
+
+// FlipAreaUnlocked flips every battlefield in an area 100% to `winner` and clears any capture lock,
+// leaving the area contestable again. Used for HQ falls: the fallen capital and the dissolved nation's
+// cascaded areas move to the captor but must stay open (the dissolved nation has to be able to attack
+// its HQ to revive, and other nations may contest the captor's new holdings normally).
+func (r *WorldRepository) FlipAreaUnlocked(ctx context.Context, areaID int32, winner byte) error {
+	if occField(winner) == "" {
+		return nil
+	}
+	occ := func(n byte) interface{} {
+		if n == winner {
+			return "$capacity"
+		}
+		return int32(0)
+	}
+	_, err := r.battlefields.UpdateMany(ctx,
+		bson.M{"areaId": areaID},
+		mongo.Pipeline{
+			{{Key: "$set", Value: bson.M{"occA": occ('A'), "occB": occ('B'), "occC": occ('C'), "locked": false}}},
+			{{Key: "$unset", Value: bson.A{"defeatedNation", "unlockAtBattle"}}},
+		})
+	return err
+}
+
+// AreasOwnedBy returns the area ids a nation currently controls (owner per areaSummaryFrom).
+func (r *WorldRepository) AreasOwnedBy(ctx context.Context, nation byte) ([]int32, error) {
+	grouped, err := r.BattlefieldsGrouped(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var owned []int32
+	for areaID, bfs := range grouped {
+		if owner, _, _, _ := areaSummaryFrom(bfs); owner == nation {
+			owned = append(owned, int32(areaID))
+		}
+	}
+	return owned, nil
 }
 
 // BattlefieldsGrouped returns every battlefield keyed by area id (sorted by map id within each area).

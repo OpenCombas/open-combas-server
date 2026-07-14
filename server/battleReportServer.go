@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -99,11 +98,9 @@ func parseBattleReport(packet []byte) (BattleResult, bool) {
 
 type battleReportServer struct {
 	*messageServer
-	squadRepo *SquadRepository // nil when Mongo is disabled -> ack only, no accumulation
-	worldRepo *WorldRepository
-	// generateEvents mirrors the EventServers config toggle: when false we still apply occupation and squad
-	// stats, but record NO data-driven world events (captures/dissolutions), leaving only the seeded briefing.
-	generateEvents bool
+	// applier holds all world/squad logic (captures, locks, dissolution/revival, events). ingest just
+	// parses the packet and hands the result off, so the CLI simulator and tests drive the same code.
+	applier *BattleApplier
 }
 
 // ingest persists one battle report: it moves the fought battlefield's occupation toward the winner and
@@ -119,111 +116,7 @@ func (s *battleReportServer) ingest(packet []byte) {
 	ctx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 	defer cancel()
 
-	if s.worldRepo != nil {
-		bf, err := s.worldRepo.BattlefieldByAreaMap(ctx, res.AreaID, res.MapID)
-		switch {
-		case err != nil:
-			logging.Warn.Printf("[%s] battlefield %d/%d read failed: %v", s.serverConfig.Label, res.AreaID, res.MapID, err)
-		case bf == nil:
-			logging.Warn.Printf("[%s] battle report for unknown battlefield %d/%d, acking without ingest", s.serverConfig.Label, res.AreaID, res.MapID)
-		case bf.Locked:
-			// A locked battlefield accepts no missions, so a report for one is spurious: ignore it
-			// entirely (no occupation, no counters, no squad renown) rather than let a stray packet
-			// overwrite the capture that locked it.
-			logging.Info.Printf("[%s] battlefield %d/%d locked (defeated %s, unlock@%d); ignoring report", s.serverConfig.Label, res.AreaID, res.MapID, bf.DefeatedNation, bf.UnlockAtBattle)
-			return
-		default:
-			s.applyBattle(ctx, res, *bf)
-		}
-	}
-	if s.squadRepo != nil {
-		if err := s.squadRepo.CreditBattle(ctx, res.WinnerTeam, res.LoserTeam, res.OccDelta, res.WinnerMerit, currentSeason); err != nil {
-			logging.Warn.Printf("[%s] squad-stat credit failed: %v", s.serverConfig.Label, err)
-		}
-	}
-	logging.Info.Printf("[%s] area %d/%d: winner %c/%s (+%d occ, +%d renown) vs %c/%s",
-		s.serverConfig.Label, res.AreaID, res.MapID, res.WinnerNation, res.WinnerTeam, res.OccDelta, res.WinnerMerit, res.LoserNation, res.LoserTeam)
-}
-
-// applyBattle applies one battle report to the world under the winner-takes-all capture model:
-//   - both combatants' battle counters advance (the unlock clock for locked battlefields);
-//   - a change of holder flips the fought battlefield 100% to the winner and locks out the loser;
-//   - if that flips the area's owner, the whole area is surrendered (every battlefield flips + locks);
-//   - reaching a nation's unlock threshold reopens the battlefields it had lost.
-//
-// A successful defence (the winner already held the battlefield) changes no occupation and issues no
-// lock -- only the counters advance. Capture/region/conquest events fire only on a genuine change of
-// hands.
-func (s *battleReportServer) applyBattle(ctx context.Context, res BattleResult, bf Battlefield) {
-	beforeLead := bfLead(bf)
-	changedHands := beforeLead != 0 && res.WinnerNation != beforeLead
-
-	// Area owner before the battle -- needed to detect an area surrender and to fire region events.
-	var before map[byte]int
-	var beforeOwner byte
-	if s.generateEvents {
-		before, _ = s.worldRepo.NationAreaCounts(ctx)
-		beforeOwner, _, _ = s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
-	}
-
-	// Both nations fought a battle: advance their counters. This is the "10 other battles across all
-	// areas" clock that eventually reopens battlefields each has lost.
-	winnerCount, err := s.worldRepo.IncrementBattleCount(ctx, res.WinnerNation)
-	if err != nil {
-		logging.Warn.Printf("[%s] battle-count bump (winner %c) failed: %v", s.serverConfig.Label, res.WinnerNation, err)
-	}
-	loserCount, err := s.worldRepo.IncrementBattleCount(ctx, res.LoserNation)
-	if err != nil {
-		logging.Warn.Printf("[%s] battle-count bump (loser %c) failed: %v", s.serverConfig.Label, res.LoserNation, err)
-	}
-
-	if changedHands {
-		// Flip the battlefield to the winner and lock out the former holder until it fights
-		// UnlockBattleThreshold more battles. The former holder is normally the losing combatant.
-		defeated := beforeLead
-		defeatedCount := loserCount
-		if defeated != res.LoserNation {
-			defeatedCount, _ = s.worldRepo.NationBattleCount(ctx, defeated)
-		}
-		if err := s.worldRepo.CaptureBattlefield(ctx, int32(res.AreaID), int32(res.MapID), res.WinnerNation, defeated, defeatedCount+UnlockBattleThreshold); err != nil {
-			logging.Warn.Printf("[%s] capture flip %d/%d failed: %v", s.serverConfig.Label, res.AreaID, res.MapID, err)
-		}
-	}
-
-	// This battle may have carried either nation past a lock it was waiting out.
-	if err := s.worldRepo.UnlockExpiredBattlefields(ctx, res.WinnerNation, winnerCount); err != nil {
-		logging.Warn.Printf("[%s] unlock sweep (%c) failed: %v", s.serverConfig.Label, res.WinnerNation, err)
-	}
-	if err := s.worldRepo.UnlockExpiredBattlefields(ctx, res.LoserNation, loserCount); err != nil {
-		logging.Warn.Printf("[%s] unlock sweep (%c) failed: %v", s.serverConfig.Label, res.LoserNation, err)
-	}
-
-	if !s.generateEvents {
-		return
-	}
-
-	// Credit the winning squad's ledger (backs the |s2= "top squad of the capturing nation"), for
-	// defences as well as captures so the ranking reflects all of a nation's activity in the area.
-	if err := s.worldRepo.CreditCapture(ctx, int32(res.AreaID), int32(res.MapID), res.WinnerTeam, string(res.WinnerNation), res.OccDelta); err != nil {
-		logging.Warn.Printf("[%s] capture-ledger credit failed: %v", s.serverConfig.Label, err)
-	}
-	if !changedHands {
-		return // a defence flips nothing -> no capture/region/conquest events
-	}
-
-	s.maybeRecordConquest(ctx, res, before)
-	afterOwner, afterLead, _ := s.worldRepo.AreaAndBFLead(ctx, int32(res.AreaID), int32(res.MapID))
-
-	// Area surrender: this capture flipped the area's owner, so the losing nation gives up the whole
-	// area -- every battlefield flips to the new owner and locks against the surrendering nation.
-	if beforeOwner != 0 && afterOwner != 0 && beforeOwner != afterOwner {
-		surCount, _ := s.worldRepo.NationBattleCount(ctx, beforeOwner)
-		if err := s.worldRepo.FlipAndLockArea(ctx, int32(res.AreaID), afterOwner, beforeOwner, surCount+UnlockBattleThreshold); err != nil {
-			logging.Warn.Printf("[%s] area surrender flip (area %d) failed: %v", s.serverConfig.Label, res.AreaID, err)
-		}
-	}
-
-	s.maybeRecordCaptures(ctx, res, beforeOwner, beforeLead, afterOwner, afterLead)
+	s.applier.Apply(ctx, res)
 }
 
 // dissolutionRow maps an eliminated nation + its conqueror to the exact "Nation Dissolved" param row in
@@ -249,8 +142,38 @@ func dissolutionRow(loser, winner byte) (int32, bool) {
 }
 
 // isHQ reports whether an area is a nation capital (Xeres=1/Tarakia, Ostrov=2/Morskoj, Qara=3/Sal Kar).
-// A capital falling is a dissolution/unification, not a region-capture event.
+// A capital falling AWAY FROM ITS DEFAULT NATION is a dissolution; a capital held by a non-default
+// nation changing hands is an ordinary region capture (see hqDefaultNation).
 func isHQ(areaID byte) bool { return areaID == 1 || areaID == 2 || areaID == 3 }
+
+// hqDefaultNation maps a capital area to the nation that owns it by default (area 1 Xeres->Tarakia,
+// 2 Ostrov->Morskoj, 3 Qara->Sal Kar); 0 for a non-capital area.
+func hqDefaultNation(areaID byte) byte {
+	switch areaID {
+	case 1:
+		return 'A'
+	case 2:
+		return 'B'
+	case 3:
+		return 'C'
+	}
+	return 0
+}
+
+// revivalRow maps a revived nation to its "Guerrilla Recaptures <capital>" WORLD_NEWS param row
+// (WorldSituationInfoNewsParam rows 7-9; the nation is baked into the text, like the dissolution rows):
+// A -> 7 (Xeres/Tarakia), B -> 8 (Ostrov/Morskoj), C -> 9 (Qara/Sal Kar).
+func revivalRow(nation byte) (int32, bool) {
+	switch nation {
+	case 'A':
+		return 7, true
+	case 'B':
+		return 8, true
+	case 'C':
+		return 9, true
+	}
+	return 0, false
+}
 
 // regionCaptureRow / battlefieldCaptureRow map the LOSER nation (abandoning the region/battlefield) to
 // its WORLD_NEWS param row. These stories don't name the conqueror, so one row per loser suffices.
@@ -278,58 +201,6 @@ func battlefieldCaptureRow(loser byte) (int32, bool) {
 	return 0, false
 }
 
-// squadDisplayName resolves a wire team id (e.g. "TM0001000000000042", read from the battle report at
-// +0x26) to the squad's human-readable name for the |s2= "most-involved squad" news slot. The capture
-// ledger keys on the stable team id; we resolve to the name only at render time. Falls back to the raw id
-// when the squad is unknown (e.g. an AI/placeholder team) or the squad repo is unavailable, so the slot is
-// never blank/worse than before.
-func (s *battleReportServer) squadDisplayName(ctx context.Context, teamID string) string {
-	if teamID == "" || s.squadRepo == nil {
-		return teamID
-	}
-	sq, err := s.squadRepo.SquadByTeamID(ctx, teamID)
-	if err != nil {
-		logging.Warn.Printf("[%s] squad-name lookup for %q failed: %v", s.serverConfig.Label, teamID, err)
-		return teamID
-	}
-	if sq == nil || sq.Name == "" {
-		return teamID
-	}
-	return sq.Name
-}
-
-// maybeRecordCaptures emits a battlefield-capture and/or a (non-HQ) region-capture WORLD_NEWS event when
-// this battle changed the lead nation of the fought battlefield / area.
-//
-// Slot2 = the top-contributing squad NAME (|s2= renders it as a literal string). Slot1 = the place-name
-// TEXT ID (NOT the name string): the region (|A1=/|a1=) and battlefield (|B1) placeholders are id-lookups --
-// the client reads slot1 as a MenuText id and resolves the name itself (region ids 5020-5044, battlefield
-// ids 5100-5209, from WorldSituationInfoNews{Area,Field}Param.bin). Writing the raw name string here renders
-// blank; the id must be sent. areaNameSlot/battlefieldNameSlot yield that id as ASCII decimal.
-func (s *battleReportServer) maybeRecordCaptures(ctx context.Context, res BattleResult, beforeOwner, beforeLead, afterOwner, afterLead byte) {
-	now := time.Now().Unix()
-	// Battlefield captured: the fought battlefield's lead nation changed.
-	if beforeLead != 0 && afterLead != 0 && beforeLead != afterLead {
-		teamID, _ := s.worldRepo.TopSquadForBattlefield(ctx, int32(res.AreaID), int32(res.MapID), string(afterLead))
-		squad := s.squadDisplayName(ctx, teamID)
-		if row, err := RecordBattlefieldCaptureEvent(ctx, s.worldRepo, int32(res.AreaID), int32(res.MapID), beforeLead, afterLead, squad, now); err != nil {
-			logging.Warn.Printf("[%s] record battlefield-capture event failed: %v", s.serverConfig.Label, err)
-		} else if row != 0 {
-			logging.Info.Printf("[%s] EVENT: battlefield %q (%d/%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, battlefieldName(int32(res.AreaID), int32(res.MapID)), res.AreaID, res.MapID, beforeLead, afterLead, squad, row)
-		}
-	}
-	// Region captured: the AREA's owner changed (RecordRegionCaptureEvent skips HQ flips = dissolution).
-	if beforeOwner != 0 && afterOwner != 0 && beforeOwner != afterOwner {
-		teamID, _ := s.worldRepo.TopSquadForRegion(ctx, int32(res.AreaID), string(afterOwner))
-		squad := s.squadDisplayName(ctx, teamID)
-		if row, err := RecordRegionCaptureEvent(ctx, s.worldRepo, int32(res.AreaID), beforeOwner, afterOwner, squad, now); err != nil {
-			logging.Warn.Printf("[%s] record region-capture event failed: %v", s.serverConfig.Label, err)
-		} else if row != 0 {
-			logging.Info.Printf("[%s] EVENT: region %q (%d) captured %c->%c (squad %q) -> row %d", s.serverConfig.Label, areaName(int32(res.AreaID)), res.AreaID, beforeOwner, afterOwner, squad, row)
-		}
-	}
-}
-
 // RecordBattlefieldCaptureEvent writes a "X Surrenders Battlefield" WORLD_NEWS event when a battlefield's
 // lead nation changed (beforeLead -> afterLead, both non-zero and different). squad is the pre-resolved |s2=
 // name (may be ""). Returns the param row written (0 = no event). Shared by the battle-report ingest and the
@@ -354,7 +225,9 @@ func RecordBattlefieldCaptureEvent(ctx context.Context, repo *WorldRepository, a
 // changed (beforeOwner -> afterOwner). squad = |s2=. Returns the row written (0 = no event; HQ flips return 0
 // -- those are a dissolution, handled separately). Shared by the battle-report ingest and cmd/capture.
 func RecordRegionCaptureEvent(ctx context.Context, repo *WorldRepository, areaID int32, beforeOwner, afterOwner byte, squad string, now int64) (int32, error) {
-	if beforeOwner == 0 || afterOwner == 0 || beforeOwner == afterOwner || isHQ(byte(areaID)) {
+	// Note: HQ *dissolutions* are filtered by the caller (recordHQFall), so an HQ area reaching here is
+	// an ordinary capture between non-default holders and DOES get a region story.
+	if beforeOwner == 0 || afterOwner == 0 || beforeOwner == afterOwner {
 		return 0, nil
 	}
 	row, ok := regionCaptureRow(beforeOwner)
@@ -369,35 +242,8 @@ func RecordRegionCaptureEvent(ctx context.Context, repo *WorldRepository, areaID
 	return row, nil
 }
 
-// maybeRecordConquest emits a nation-dissolved world event when this battle eliminated the losing nation
-// (its controlled-area count went from >0 to 0). before is the per-nation area count captured just before
-// the occupation update; a nil before or a failed post-count skips detection rather than blocking the ack.
-func (s *battleReportServer) maybeRecordConquest(ctx context.Context, res BattleResult, before map[byte]int) {
-	if before == nil {
-		return
-	}
-	after, err := s.worldRepo.NationAreaCounts(ctx)
-	if err != nil {
-		logging.Warn.Printf("[%s] post-battle area count failed: %v", s.serverConfig.Label, err)
-		return
-	}
-	if before[res.LoserNation] == 0 || after[res.LoserNation] != 0 {
-		return // not a fresh elimination
-	}
-	row, ok := dissolutionRow(res.LoserNation, res.WinnerNation)
-	if !ok {
-		return
-	}
-	ev := EventRecord{CreatedAt: time.Now().Unix(), TemplateID: row}
-	if err := s.worldRepo.RecordEvent(ctx, ev); err != nil {
-		logging.Warn.Printf("[%s] record dissolution event failed: %v", s.serverConfig.Label, err)
-		return
-	}
-	logging.Info.Printf("[%s] EVENT: nation %c eliminated by %c -> news row %d", s.serverConfig.Label, res.LoserNation, res.WinnerNation, row)
-}
-
 func NewBattleReportServer(listenAddress net.IP, serverConfig config.EventServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, squadRepo *SquadRepository, worldRepo *WorldRepository) *battleReportServer {
-	s := &battleReportServer{squadRepo: squadRepo, worldRepo: worldRepo, generateEvents: serverConfig.GenerateEvents}
+	s := &battleReportServer{applier: NewBattleApplier(worldRepo, squadRepo, serverConfig.GenerateEvents, serverConfig.Label)}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,

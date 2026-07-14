@@ -1,0 +1,23 @@
+# HQ fall + revival demo. Run against a freshly reset world:
+#   go run ./cmd/reset -confirm            # seed the war map
+#   go run ./cmd/simulate -scenario cmd/simulate/scenarios/hq_fall.txt
+#
+# Format: area map attacker defender outcome [winnerTeam] [occ]
+#
+# --- Phase 1: A grinds down B's capital (Ostrov = area 2, 4 battlefields) ---
+# Each capture flips one battlefield to A and locks B out of it. When A takes the
+# majority, area 2's owner flips B->A: that is the HQ fall.
+2 1 A B win
+2 2 A B win
+2 3 A B win
+# ^ HQ FALL expected here: dissolution story fires, every OTHER area B still holds
+#   (its home block 4-8 etc.) cascades 100% to A, and B enters revival lockout
+#   (nations: B should now read DISSOLVED, capital lost to A).
+#
+# --- Phase 2: B fights its way back into its capital ---
+# While dissolved B may only contest area 2. Retaking the majority revives it.
+2 1 B A win
+2 2 B A win
+2 3 B A win
+# ^ REVIVAL expected here: "Guerrilla Recaptures Ostrov" (row 8) fires and B's
+#   lockout lifts. Note the cascaded areas (4-8) stay A's -- B must re-earn them.

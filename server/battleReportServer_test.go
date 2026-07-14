@@ -175,3 +175,99 @@ func TestBattleReportIngestLive(t *testing.T) {
 		t.Error("CPU side should not get a stats doc")
 	}
 }
+
+// TestHQFallAndRevivalLive exercises the HQ-fall primitives against a real Mongo: an area cascade to the
+// captor, the dissolved-nation flag, and the revival transition. It mirrors the sequence recordHQFall /
+// recordRevival drive so the repo-level mechanics are covered without standing up a full messageServer.
+func TestHQFallAndRevivalLive(t *testing.T) {
+	uri := os.Getenv("MONGO_TEST_URI")
+	if uri == "" {
+		t.Skip("set MONGO_TEST_URI to run the live HQ-fall test")
+	}
+	ctx := context.Background()
+	store, err := persistence.Connect(ctx, uri, "combas_test")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	defer store.Close(ctx)
+
+	world := NewWorldRepository(store)
+	_ = world.battlefields.Drop(ctx)
+	_ = world.nations.Drop(ctx)
+	t.Cleanup(func() { _ = world.battlefields.Drop(ctx); _ = world.nations.Drop(ctx) })
+
+	// Nation B holds its capital (area 2, two battlefields) plus one conquered area (5). A holds area 1.
+	seed := []Battlefield{
+		{AreaID: 2, MapID: 1, Capacity: 1000, OccB: 1000},
+		{AreaID: 2, MapID: 2, Capacity: 1000, OccB: 1000},
+		{AreaID: 5, MapID: 1, Capacity: 1000, OccB: 1000},
+		{AreaID: 1, MapID: 1, Capacity: 1000, OccA: 1000},
+	}
+	for _, b := range seed {
+		if _, err := world.battlefields.InsertOne(ctx, b); err != nil {
+			t.Fatalf("seed bf: %v", err)
+		}
+	}
+	if _, err := world.nations.InsertMany(ctx, []any{NationRecord{CountryCode: "A"}, NationRecord{CountryCode: "B"}}); err != nil {
+		t.Fatalf("seed nations: %v", err)
+	}
+
+	if owned := ownedSet(t, ctx, world, 'B'); !owned[2] || !owned[5] {
+		t.Fatalf("B should own areas 2 and 5 before the fall, got %v", owned)
+	}
+
+	// --- HQ fall: A takes area 2 (B's capital) -> capital + cascade flip to A, B dissolved ---
+	if err := world.FlipAreaUnlocked(ctx, 2, 'A'); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []int32{5} { // cascade B's other areas
+		if err := world.FlipAreaUnlocked(ctx, a, 'A'); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := world.SetNationHQLost(ctx, 'B', 'A'); err != nil {
+		t.Fatal(err)
+	}
+	// Every battlefield of areas 2 and 5 is now 100% A and unlocked.
+	for _, areaID := range []byte{2, 5} {
+		bfs, _ := world.BattlefieldsByArea(ctx, areaID)
+		for _, b := range bfs {
+			if b.OccA != b.Capacity || b.OccB != 0 || b.Locked {
+				t.Errorf("area %d/%d after fall = %+v, want 100%% A unlocked", areaID, b.MapID, b)
+			}
+		}
+	}
+	if captor, _ := world.NationHQLostTo(ctx, 'B'); captor != 'A' {
+		t.Errorf("B dissolved captor = %q, want 'A'", captor)
+	}
+	if owned := ownedSet(t, ctx, world, 'B'); len(owned) != 0 {
+		t.Errorf("B should own nothing after the fall, got %v", owned)
+	}
+
+	// --- revival: B retakes its capital (area 2) -> flips back, lockout lifts ---
+	if err := world.FlipAreaUnlocked(ctx, 2, 'B'); err != nil {
+		t.Fatal(err)
+	}
+	if err := world.ClearNationHQLost(ctx, 'B'); err != nil {
+		t.Fatal(err)
+	}
+	if captor, _ := world.NationHQLostTo(ctx, 'B'); captor != 0 {
+		t.Errorf("B should no longer be dissolved, captor = %q", captor)
+	}
+	if owned := ownedSet(t, ctx, world, 'B'); !owned[2] || owned[5] {
+		t.Errorf("after revival B should own only area 2 (not the cascaded 5), got %v", owned)
+	}
+}
+
+func ownedSet(t *testing.T, ctx context.Context, world *WorldRepository, nation byte) map[int32]bool {
+	t.Helper()
+	owned, err := world.AreasOwnedBy(ctx, nation)
+	if err != nil {
+		t.Fatalf("AreasOwnedBy(%c): %v", nation, err)
+	}
+	set := make(map[int32]bool, len(owned))
+	for _, a := range owned {
+		set[a] = true
+	}
+	return set
+}
