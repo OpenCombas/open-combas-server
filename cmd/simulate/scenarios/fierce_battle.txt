@@ -1,0 +1,33 @@
+# Test the AREA FIERCE-BATTLE FLAG (激戦エリアフラグ): set when >30% of an area's ingested battle reports
+# are PvP, and cleared when the running share drops to <=30% OR the area flips owner.
+#
+#   go run ./cmd/reset -confirm -downscale 20
+#   go run ./cmd/simulate -scenario cmd/simulate/scenarios/fierce_battle.txt
+#
+# Each mission prints "area 13  PvP p/t (pct%) -> FIERCE|calm" so you can watch the flag toggle.
+# PvP  = the winner is a real squad (TM id) distinct from the losing squad (loser defaults to TM...0002).
+# PvE  = the winner is an AI id (non-TM, here AAA...), so only one real squad is involved.
+# occ=10 keeps these skirmishes from ever capturing the battlefield, so the % battles never flip the area.
+#
+# --- Phase 1: PvP-heavy -> flag SET ---
+13 3 B A win TM0001000000000001 10   # PvP -> 1/1 (100%) FIERCE
+13 3 B A win TM0001000000000001 10   # PvP -> 2/2 (100%) FIERCE
+13 3 B A win AAA9999999999999999 10  # PvE -> 2/3 (66%)  FIERCE
+#
+# --- Phase 2: pile on PvE until the running share drops to <=30% -> flag SELF-CLEARS ---
+13 3 B A win AAA9999999999999999 10  # 2/4 (50%) FIERCE
+13 3 B A win AAA9999999999999999 10  # 2/5 (40%) FIERCE
+13 3 B A win AAA9999999999999999 10  # 2/6 (33%) FIERCE  (still over 30%)
+13 3 B A win AAA9999999999999999 10  # 2/7 (28%) -> calm
+#
+# --- Phase 3: build PvP back over 30%, then FLIP the area -> the flip RESETS the tally ---
+13 3 B A win TM0001000000000001 10   # 3/8 (37%) FIERCE again
+# Capture Melton's key battlefields (occ=300 crosses over on the 3rd mission each). Taking bf1 then bf2
+# gives B the area's dot majority -> area flips A->B -> ResetAreaBattleStats clears area 13's tally.
+13 1 B A win TM0001000000000001 300
+13 1 B A win TM0001000000000001 300
+13 1 B A win TM0001000000000001 300
+13 2 B A win TM0001000000000001 300
+13 2 B A win TM0001000000000001 300
+13 2 B A win TM0001000000000001 300
+# ^ on this capture the area flips; the "area 13 PvP" line should drop back to 0/0 (tally reset).

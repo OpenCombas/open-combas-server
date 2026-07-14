@@ -1,0 +1,17 @@
+# PROGRESSIVE: capturing a single battlefield by accumulating occupation across missions.
+#
+# Assumes a downscaled reset so a capture is a few missions, not dozens:
+#   go run ./cmd/reset -confirm -downscale 20      # capacity ~1250 per battlefield
+#   go run ./cmd/simulate -scenario cmd/simulate/scenarios/battlefield_capture.txt
+#
+# Format: area map attacker defender outcome [winnerTeam] [occ]
+# With occ=300 vs a 1250 capacity, the attacker overtakes the holder on the 3rd mission.
+#
+# B attacks a single battlefield of Melton (area 13, A-held). Watch the printed "bf 13/1" line:
+#   mission 1 -> A=950  B=300  (still A)      -- occupation only, NO capture, NO lock
+#   mission 2 -> A=650  B=600  (still A)      -- still short of overtaking
+#   mission 3 -> crossover -> 100% B, LOCKED  -- winner-takes-all snap + lock, battlefield-capture news
+13 1 B A win Bravo 300
+13 1 B A win Bravo 300
+13 1 B A win Bravo 300
+# A further report here would be IGNORED (the battlefield is now locked against A).

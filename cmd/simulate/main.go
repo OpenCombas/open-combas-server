@@ -144,9 +144,46 @@ func (s *sim) runOne(ctx context.Context, res server.BattleResult, full bool) {
 	if full {
 		s.printArea(ctx, "AFTER", int32(res.AreaID))
 		s.printNations(ctx)
+	} else {
+		// Scenario mode: show the fought battlefield's occupation so the accumulation -> crossover -> capture
+		// progression is visible mission by mission, plus the fought area's running PvP share / fierce flag.
+		s.printFoughtBf(ctx, res)
+		s.printAreaFierce(ctx, int32(res.AreaID))
 	}
 	s.printNewEvents(ctx, beforeN)
 	fmt.Println()
+}
+
+// printAreaFierce prints the fought area's running PvP share and fierce-battle flag (>30% PvP). Shown even
+// at 0/0 so a flip's stat reset is visible.
+func (s *sim) printAreaFierce(ctx context.Context, area int32) {
+	total, pvp, err := s.world.AreaBattleCounts(ctx, area)
+	if err != nil {
+		return
+	}
+	pct := int64(0)
+	if total > 0 {
+		pct = pvp * 100 / total
+	}
+	status := "calm"
+	if pvp*100 > total*30 {
+		status = "FIERCE"
+	}
+	fmt.Printf("  area %d  PvP %d/%d (%d%%)  -> %s\n", area, pvp, total, pct, status)
+}
+
+// printFoughtBf prints the just-fought battlefield's occupation, lead, and lock state.
+func (s *sim) printFoughtBf(ctx context.Context, res server.BattleResult) {
+	bf, err := s.world.BattlefieldByAreaMap(ctx, res.AreaID, res.MapID)
+	if err != nil || bf == nil {
+		return
+	}
+	lock := ""
+	if bf.Locked {
+		lock = fmt.Sprintf("   LOCKED(vs %s, unlock@%d)", bf.DefeatedNation, bf.UnlockAtBattle)
+	}
+	fmt.Printf("  bf %d/%d  A=%-6d B=%-6d C=%-6d  -> %c%s\n",
+		bf.AreaID, bf.MapID, bf.OccA, bf.OccB, bf.OccC, leadChar(*bf), lock)
 }
 
 func (s *sim) runScenario(ctx context.Context, path string) {

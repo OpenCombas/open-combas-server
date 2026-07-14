@@ -89,6 +89,11 @@ func (s *BattleApplier) applyBattle(ctx context.Context, res BattleResult, bf Ba
 		logging.Warn.Printf("[%s] battle-count bump (loser %c) failed: %v", s.label, res.LoserNation, err)
 	}
 
+	// Record this report toward the area's fierce-battle share (PvP = two distinct real squads).
+	if err := s.worldRepo.CreditAreaBattle(ctx, int32(res.AreaID), isPvP(res)); err != nil {
+		logging.Warn.Printf("[%s] area-battle credit (area %d) failed: %v", s.label, res.AreaID, err)
+	}
+
 	if changedHands {
 		// Crossover -> winner-takes-all: snap the battlefield to 100% for the winner and lock out the former
 		// holder until it fights UnlockBattleThreshold more battles. The former holder is normally the loser.
@@ -154,6 +159,10 @@ func (s *BattleApplier) applyBattle(ctx context.Context, res BattleResult, bf Ba
 		if err := s.worldRepo.FlipAndLockArea(ctx, int32(res.AreaID), afterOwner, beforeOwner, surCount+UnlockBattleThreshold); err != nil {
 			logging.Warn.Printf("[%s] area surrender flip (area %d) failed: %v", s.label, res.AreaID, err)
 		}
+		// The area flipped -> its fierce-battle share restarts.
+		if err := s.worldRepo.ResetAreaBattleStats(ctx, int32(res.AreaID)); err != nil {
+			logging.Warn.Printf("[%s] area-stats reset (area %d) failed: %v", s.label, res.AreaID, err)
+		}
 	}
 
 	s.maybeRecordCaptures(ctx, res, beforeOwner, beforeLead, afterOwner, afterLead)
@@ -167,9 +176,12 @@ func (s *BattleApplier) recordHQFall(ctx context.Context, res BattleResult, lose
 	now := time.Now().Unix()
 
 	// The fallen capital flips fully to the captor but stays UNLOCKED -- the dissolved nation has to be
-	// able to attack it to revive.
+	// able to attack it to revive. Its fierce-battle share restarts (the area flipped).
 	if err := s.worldRepo.FlipAreaUnlocked(ctx, int32(res.AreaID), captor); err != nil {
 		logging.Warn.Printf("[%s] HQ flip (area %d) failed: %v", s.label, res.AreaID, err)
+	}
+	if err := s.worldRepo.ResetAreaBattleStats(ctx, int32(res.AreaID)); err != nil {
+		logging.Warn.Printf("[%s] area-stats reset (area %d) failed: %v", s.label, res.AreaID, err)
 	}
 	// Cascade: every OTHER area the loser still holds surrenders to the captor. Current control only --
 	// an area of the loser's home territory that some third nation already took is not affected.
@@ -186,6 +198,7 @@ func (s *BattleApplier) recordHQFall(ctx context.Context, res BattleResult, lose
 			logging.Warn.Printf("[%s] HQ cascade flip (area %d) failed: %v", s.label, a, err)
 			continue
 		}
+		_ = s.worldRepo.ResetAreaBattleStats(ctx, a) // cascaded area flipped -> restart its share
 		cascaded++
 	}
 	if err := s.worldRepo.SetNationHQLost(ctx, loser, captor); err != nil {
@@ -212,6 +225,9 @@ func (s *BattleApplier) recordRevival(ctx context.Context, res BattleResult, nat
 	if err := s.worldRepo.FlipAreaUnlocked(ctx, int32(res.AreaID), nation); err != nil {
 		logging.Warn.Printf("[%s] revival HQ flip (area %d) failed: %v", s.label, res.AreaID, err)
 	}
+	if err := s.worldRepo.ResetAreaBattleStats(ctx, int32(res.AreaID)); err != nil {
+		logging.Warn.Printf("[%s] area-stats reset (area %d) failed: %v", s.label, res.AreaID, err)
+	}
 	if err := s.worldRepo.ClearNationHQLost(ctx, nation); err != nil {
 		logging.Warn.Printf("[%s] clear dissolved (%c) failed: %v", s.label, nation, err)
 	}
@@ -225,6 +241,12 @@ func (s *BattleApplier) recordRevival(ctx context.Context, res BattleResult, nat
 		return
 	}
 	logging.Info.Printf("[%s] EVENT: %c revived (retook capital area %d) -> revival row %d", s.label, nation, res.AreaID, row)
+}
+
+// isPvP reports whether a battle report is squad-vs-squad: both sides are real squad teams (TM ids) and
+// distinct. A battle against an AI/CPU side (a non-TM id) is PvE. Drives the area fierce-battle share.
+func isPvP(res BattleResult) bool {
+	return isRealTeam(res.WinnerTeam) && isRealTeam(res.LoserTeam) && res.WinnerTeam != res.LoserTeam
 }
 
 // squadDisplayName resolves a wire team id (e.g. "TM0001000000000042", read from the battle report at

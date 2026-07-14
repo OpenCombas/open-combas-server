@@ -83,6 +83,32 @@ func TestParseBattleReport(t *testing.T) {
 	}
 }
 
+// TestPvPAndFierce covers PvP detection and the fierce-battle threshold.
+func TestPvPAndFierce(t *testing.T) {
+	if !isPvP(BattleResult{WinnerTeam: "TM0001000000000001", LoserTeam: "TM0001000000000002"}) {
+		t.Error("two distinct TM squads should be PvP")
+	}
+	if isPvP(BattleResult{WinnerTeam: "TM0001000000000001", LoserTeam: "AAA9999999999999999"}) {
+		t.Error("a battle vs a non-TM (AI/CPU) side is not PvP")
+	}
+	if isPvP(BattleResult{WinnerTeam: "TM0001000000000001", LoserTeam: "TM0001000000000001"}) {
+		t.Error("identical team ids are not two distinct squads")
+	}
+	// Fierce = strictly OVER 30% PvP.
+	if fierceFromCounts(0, 0) {
+		t.Error("no battles -> not fierce")
+	}
+	if fierceFromCounts(10, 3) {
+		t.Error("exactly 30% is not over 30%")
+	}
+	if !fierceFromCounts(10, 4) {
+		t.Error("40% PvP should be fierce")
+	}
+	if !fierceFromCounts(3, 1) {
+		t.Error("33% PvP should be fierce")
+	}
+}
+
 // TestLeadAfterDelta covers the capture trigger: a battlefield changes hands only when a mission's
 // occupation shift makes the attacker overtake the holder -- a single mission never flips a full one.
 func TestLeadAfterDelta(t *testing.T) {

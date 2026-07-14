@@ -28,7 +28,12 @@ const (
 	nationsCollection      = "nations"
 	eventsCollection       = "events"
 	capturesCollection     = "captureContributions"
+	areaStatsCollection    = "areaBattleStats"
 	worldReadTimeout       = 3 * time.Second
+
+	// fierceBattlePvpPercent is the PvP share of an area's battle reports above which its "fierce battle"
+	// flag (激戦エリアフラグ) is set. The share resets when the area flips owner.
+	fierceBattlePvpPercent = 30
 )
 
 // EventRecord is one world event, stored in the `events` collection and rendered as a WORLD_NEWS item
@@ -104,6 +109,7 @@ type WorldRepository struct {
 	nations      *mongo.Collection
 	events       *mongo.Collection
 	captures     *mongo.Collection
+	areaStats    *mongo.Collection
 }
 
 func NewWorldRepository(store *persistence.Store) *WorldRepository {
@@ -112,6 +118,7 @@ func NewWorldRepository(store *persistence.Store) *WorldRepository {
 		nations:      store.Collection(nationsCollection),
 		events:       store.Collection(eventsCollection),
 		captures:     store.Collection(capturesCollection),
+		areaStats:    store.Collection(areaStatsCollection),
 	}
 }
 
@@ -295,6 +302,13 @@ func (r *WorldRepository) EnsureSchema(ctx context.Context) error {
 	// captureContributions: one doc per (area, map, squad) -- unique so CreditCapture's upsert increments.
 	if _, err := r.captures.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "areaId", Value: 1}, {Key: "mapId", Value: 1}, {Key: "squad", Value: 1}},
+		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return err
+	}
+	// areaBattleStats: one doc per area -- unique so CreditAreaBattle's upsert increments the tally.
+	if _, err := r.areaStats.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys:    bson.D{{Key: "areaId", Value: 1}},
 		Options: options.Index().SetUnique(true),
 	}); err != nil {
 		return err
@@ -799,6 +813,84 @@ func areaMapRecordsFrom(bfs []Battlefield) ([6]AreaMapRecord, byte) {
 		n++
 	}
 	return maps, byte(n)
+}
+
+// areaBattleStat is one area's ingested-battle tally (total reports and the PvP subset), backing the
+// fierce-battle flag.
+type areaBattleStat struct {
+	AreaID int32 `bson:"areaId"`
+	Total  int64 `bson:"total"`
+	PvP    int64 `bson:"pvp"`
+}
+
+// CreditAreaBattle records one ingested battle report for an area: total +1, and pvp +1 when the report
+// is squad-vs-squad. Backs the fierce-battle flag (AreaFierceFlags). Upserts the area's tally.
+func (r *WorldRepository) CreditAreaBattle(ctx context.Context, areaID int32, pvp bool) error {
+	inc := bson.M{"total": int64(1)}
+	if pvp {
+		inc["pvp"] = int64(1)
+	}
+	_, err := r.areaStats.UpdateOne(ctx,
+		bson.M{"areaId": areaID},
+		bson.M{"$inc": inc},
+		options.UpdateOne().SetUpsert(true))
+	return err
+}
+
+// ResetAreaBattleStats clears an area's battle tally so its fierce-battle share restarts from zero. Called
+// when the area flips owner (which also clears the flag).
+func (r *WorldRepository) ResetAreaBattleStats(ctx context.Context, areaID int32) error {
+	_, err := r.areaStats.DeleteOne(ctx, bson.M{"areaId": areaID})
+	return err
+}
+
+// fierceFromCounts reports whether an area's PvP share exceeds the fierce-battle threshold.
+func fierceFromCounts(total, pvp int64) bool {
+	return total > 0 && pvp*100 > total*fierceBattlePvpPercent
+}
+
+// AreaBattleCounts returns an area's total and PvP battle-report tallies (0,0 if none). For display/tools.
+func (r *WorldRepository) AreaBattleCounts(ctx context.Context, areaID int32) (total, pvp int64, err error) {
+	var s areaBattleStat
+	e := r.areaStats.FindOne(ctx, bson.M{"areaId": areaID}).Decode(&s)
+	if e == mongo.ErrNoDocuments {
+		return 0, 0, nil
+	}
+	if e != nil {
+		return 0, 0, e
+	}
+	return s.Total, s.PvP, nil
+}
+
+// AreaFierce reports whether one area's fierce-battle flag is set (see AreaFierceFlags).
+func (r *WorldRepository) AreaFierce(ctx context.Context, areaID int32) (bool, error) {
+	var s areaBattleStat
+	err := r.areaStats.FindOne(ctx, bson.M{"areaId": areaID}).Decode(&s)
+	if err == mongo.ErrNoDocuments {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return fierceFromCounts(s.Total, s.PvP), nil
+}
+
+// AreaFierceFlags returns, per area id, whether the fierce-battle flag is set: more than
+// fierceBattlePvpPercent of that area's ingested battle reports have been PvP (squad vs squad).
+func (r *WorldRepository) AreaFierceFlags(ctx context.Context) (map[int32]bool, error) {
+	cur, err := r.areaStats.Find(ctx, bson.M{})
+	if err != nil {
+		return nil, err
+	}
+	var stats []areaBattleStat
+	if err := cur.All(ctx, &stats); err != nil {
+		return nil, err
+	}
+	flags := make(map[int32]bool, len(stats))
+	for _, s := range stats {
+		flags[s.AreaID] = fierceFromCounts(s.Total, s.PvP)
+	}
+	return flags, nil
 }
 
 // areaSummaryFrom derives area-level control (area-map / code 196) from stored battlefields: the owner

@@ -1,0 +1,27 @@
+# PROGRESSIVE: a captured battlefield locks, then reopens after the defeated nation fights 10 more battles.
+#
+#   go run ./cmd/reset -confirm -downscale 20
+#   go run ./cmd/simulate -scenario cmd/simulate/scenarios/lock_unlock.txt
+#
+# --- B captures Melton bf 13/1 (locks A out of it) ---
+13 1 B A win Bravo 300
+13 1 B A win Bravo 300
+13 1 B A win Bravo 300
+# ^ 13/1 -> 100% B, LOCKED (defeated A, unlock@ A's battleCount + 10). A can't contest 13/1 now.
+#
+# --- A fights 10 battles elsewhere; each advances A's battle counter toward the unlock threshold ---
+# (single missions across B-held battlefields -- occupation only, nothing captured)
+16 1 A B win Alpha 300
+16 2 A B win Alpha 300
+16 3 A B win Alpha 300
+17 1 A B win Alpha 300
+17 2 A B win Alpha 300
+17 3 A B win Alpha 300
+17 4 A B win Alpha 300
+4 1 A B win Alpha 300
+4 2 A B win Alpha 300
+4 3 A B win Alpha 300
+# ^ A has now fought its 10 "other battles" -> the unlock sweep clears the lock on 13/1.
+#
+# --- prove it: A can contest 13/1 again (its occupation moves instead of the report being ignored) ---
+13 1 A B win Alpha 300

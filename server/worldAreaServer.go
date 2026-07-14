@@ -56,11 +56,15 @@ const worldAreaCount = 22
 // newAreaState assembles the war-map reply, taking per-area control from `summary`. AreaID is 1-based:
 // the war-map nodes are static client-side, but the per-area info request keys off this id, and a
 // 0-based id resolved to the wrong (north) neighbour in testing.
-func newAreaState(xuid [16]byte, order [8]byte, summary func(areaID byte) (owner byte, pointsA, pointsB, pointsC int32)) AreaState {
+func newAreaState(xuid [16]byte, order [8]byte, summary func(areaID byte) (owner byte, pointsA, pointsB, pointsC int32), fierce func(areaID byte) bool) AreaState {
 	var areas [25]AreaRecord
 	for i := 0; i < worldAreaCount; i++ {
 		areaID := byte(i + 1)
 		owner, pointsA, pointsB, pointsC := summary(areaID)
+		var battleFlag byte
+		if fierce != nil && fierce(areaID) {
+			battleFlag = 1 // 激戦エリアフラグ: >30% of this area's battle reports have been PvP
+		}
 		// NOTE: PriorityA/B/C (重点目標エリアフラグ) are deliberately left 0. They draw the orange
 		// "priority strategic target" ring on the war map for the player's own nation and are meant to be
 		// set only by a war event, never as part of the default/reset state. Setting them per owning
@@ -69,6 +73,7 @@ func newAreaState(xuid [16]byte, order [8]byte, summary func(areaID byte) (owner
 			AreaID:        areaID,
 			OwningFaction: owner,               // sets the map owner flag (was unset -> only Morskoj rendered)
 			AreaPoints:    battlefieldCapacity, // per-nation occupation denominator (matches the points' 0..cap scale)
+			BattleFlag:    battleFlag,          // 激戦エリアフラグ (fierce-battle flag; PvP-driven)
 			PointsA:       pointsA,             // averaged per-nation occupation (0..capacity), summing to capacity
 			PointsB:       pointsB,
 			PointsC:       pointsC,
@@ -85,8 +90,8 @@ func newAreaState(xuid [16]byte, order [8]byte, summary func(areaID byte) (owner
 
 func CreateAreaState(xuid [16]byte, order [8]byte) AreaState {
 	// Static model: control derived from worldData.go so the war-map owner flag matches the per-area
-	// battlefield occupation served by the area-info (197) server.
-	return newAreaState(xuid, order, areaControlSummary)
+	// battlefield occupation served by the area-info (197) server. No fierce-battle flags without live data.
+	return newAreaState(xuid, order, areaControlSummary, nil)
 }
 
 type worldAreaServer struct {
@@ -103,8 +108,15 @@ func (s *worldAreaServer) buildArea(hi UserHelloMessage) AreaState {
 		if grouped, err := s.repo.BattlefieldsGrouped(readCtx); err != nil {
 			logging.Warn.Printf("[%s] mongo read failed, using static model: %v", s.serverConfig.Label, err)
 		} else if len(grouped) > 0 {
+			// Fierce-battle flags are best-effort: a read error just leaves them unset.
+			fierce, ferr := s.repo.AreaFierceFlags(readCtx)
+			if ferr != nil {
+				logging.Warn.Printf("[%s] fierce-flag read failed, leaving unset: %v", s.serverConfig.Label, ferr)
+			}
 			return newAreaState(hi.Xuid, hi.Order, func(areaID byte) (byte, int32, int32, int32) {
 				return areaSummaryFrom(grouped[areaID])
+			}, func(areaID byte) bool {
+				return fierce[int32(areaID)]
 			})
 		}
 	}

@@ -1,15 +1,17 @@
-# Nation A's capital (Xeres = area 1, 4 battlefields) falls to B, and A does NOT revive.
-# Use to observe the defeated-nation state: A dissolved (DeadFlag set), its areas cascaded to B, and A
-# left in revival lockout with no recovery.
+# PROGRESSIVE: nation A's capital falls and A stays defeated (no revival).
 #
-#   go run ./cmd/reset -confirm
+#   go run ./cmd/reset -confirm -downscale 20
 #   go run ./cmd/simulate -scenario cmd/simulate/scenarios/a_falls_no_revive.txt
 #
-# Format: area map attacker defender outcome [winnerTeam] [occ]
+# Xeres (area 1) is Tarakia's capital, 4 battlefields worth 2 + 1 + 1 + 1 dots. B takes bf1 then bf2 to
+# out-hold A's dots (3 vs 2) -> the capital flips A->B = HQ FALL: dissolution news, A's remaining areas
+# cascade to B, A's DeadFlag set, A dissolved. No further lines -> A remains defeated (use to observe the
+# steady defeated-nation state: guerrilla notification, asylum/defection, HQ-only sorties).
 #
-# B grinds down Xeres until it flips B majority -> HQ fall.
-1 1 B A win
-1 2 B A win
-1 3 B A win
-# ^ HQ FALL expected here: dissolution story fires, A's remaining areas cascade 100% to B, A enters
-#   revival lockout and its DeadFlag is set. No further lines -> A stays defeated (no revival).
+1 1 B A win Bravo 300
+1 1 B A win Bravo 300
+1 1 B A win Bravo 300
+1 2 B A win Bravo 300
+1 2 B A win Bravo 300
+1 2 B A win Bravo 300
+# ^ HQ FALL here. `nations` should show A DISSOLVED (capital lost to B); it does not recover.

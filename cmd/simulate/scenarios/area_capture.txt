@@ -1,0 +1,18 @@
+# PROGRESSIVE: capturing a whole (non-capital) area by taking enough of its battlefields.
+#
+#   go run ./cmd/reset -confirm -downscale 20
+#   go run ./cmd/simulate -scenario cmd/simulate/scenarios/area_capture.txt
+#
+# Melton (area 13, A-held) has 3 battlefields worth 2 + 2 + 1 strategic dots. B must hold more dots than
+# A to own the area. Taking bf1 (2) still leaves A ahead (2 + 1 = 3 vs 2); taking bf2 (2) as well gives B
+# 4 vs A's 1 -> the AREA flips A->B: region-capture news, and the area's remaining battlefield cascades
+# 100% to B. Each battlefield is a 3-mission grind (occ=300 vs ~1250 capacity).
+#
+# --- capture bf 13/1 (area still A afterwards) ---
+13 1 B A win Bravo 300
+13 1 B A win Bravo 300
+13 1 B A win Bravo 300
+# --- capture bf 13/2 -> B now leads the area's dots -> AREA FLIPS + cascade of bf 13/3 to B ---
+13 2 B A win Bravo 300
+13 2 B A win Bravo 300
+13 2 B A win Bravo 300

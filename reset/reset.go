@@ -25,6 +25,7 @@ const (
 	eventsCollection       = "events"
 	capturesCollection     = "captureContributions"
 	nationsCollection      = "nations"
+	areaStatsCollection    = "areaBattleStats"
 
 	// defaultCapturePoints is the occupation-pool capacity used for a battlefield whose real capture
 	// points aren't known yet (known_occ_points lists a 0 for those).
@@ -46,7 +47,7 @@ type battlefield struct {
 // areaBattlefieldCount[N] = number of battlefields in area N (1..22), from mapdata/map/mNN_*. Mirrors the
 // server's static model and was validated against known_occ_points.png (per-area map counts match).
 var areaBattlefieldCount = [23]byte{
-	0, // index 0 unused (areas are 1-based)
+	0,                            // index 0 unused (areas are 1-based)
 	4, 4, 3, 3, 3, 4, 3, 4, 4, 4, // 1-10
 	4, 4, 3, 3, 4, 3, 4, 4, 3, 4, // 11-20
 	4, 4, // 21-22
@@ -247,7 +248,11 @@ func resetBattlefields(ctx context.Context, store *persistence.Store, downscale 
 	// Fresh battlefields start unlocked (no lock fields), so zero the per-nation battle counter that
 	// drives the capture-lock clock -- otherwise a stale count from the prior war leaves the unlock
 	// thresholds reading from an arbitrary baseline.
-	_, err := store.Collection(nationsCollection).UpdateMany(ctx, bson.M{}, bson.M{"$set": bson.M{"battleCount": int32(0)}})
+	if _, err := store.Collection(nationsCollection).UpdateMany(ctx, bson.M{}, bson.M{"$set": bson.M{"battleCount": int32(0)}}); err != nil {
+		return err
+	}
+	// Clear the per-area fierce-battle tallies so the new war starts with no fierce flags.
+	_, err := store.Collection(areaStatsCollection).DeleteMany(ctx, bson.M{})
 	return err
 }
 

@@ -54,13 +54,17 @@ type AreaInfoState struct {
 
 // newAreaInfoState assembles the per-area battlefield reply from a fixed set of records (static model
 // or Mongo-backed).
-func newAreaInfoState(xuid [16]byte, order [8]byte, areaID byte, maps [6]AreaMapRecord, mapCount byte) AreaInfoState {
+func newAreaInfoState(xuid [16]byte, order [8]byte, areaID byte, maps [6]AreaMapRecord, mapCount byte, fierce bool) AreaInfoState {
+	var battleFlag byte
+	if fierce {
+		battleFlag = 1 // 激戦エリアフラグ: >30% of this area's battle reports have been PvP
+	}
 	return AreaInfoState{
 		Header:     CreateHeader(xuid, order),
 		World:      worldHeaderNow(),
 		AreaID:     areaID,
 		MapCount:   mapCount,
-		BattleFlag: 0,
+		BattleFlag: battleFlag,
 		Maps:       maps,
 	}
 }
@@ -69,7 +73,7 @@ func CreateAreaInfoState(xuid [16]byte, order [8]byte, areaID byte) AreaInfoStat
 	// Static model (worldData.go): keeps the count (3 or 4), per-nation occupation and controlling flag
 	// consistent with the war-map (area-map / code 196) server.
 	maps, mapCount := areaBattlefields(areaID)
-	return newAreaInfoState(xuid, order, areaID, maps, mapCount)
+	return newAreaInfoState(xuid, order, areaID, maps, mapCount, false)
 }
 
 // parseAreaID extracts <id> from a request body of "<gamertag>,<id>" (e.g. "ibac,11").
@@ -104,7 +108,11 @@ func (s *worldAreaInfoServer) buildAreaInfo(hi UserHelloMessage, areaID byte) Ar
 			logging.Warn.Printf("[%s] mongo read failed, using static model: %v", s.serverConfig.Label, err)
 		} else if len(bfs) > 0 {
 			maps, mapCount := areaMapRecordsFrom(bfs)
-			return newAreaInfoState(hi.Xuid, hi.Order, areaID, maps, mapCount)
+			fierce, ferr := s.repo.AreaFierce(readCtx, int32(areaID))
+			if ferr != nil {
+				logging.Warn.Printf("[%s] fierce-flag read (area %d) failed, leaving unset: %v", s.serverConfig.Label, areaID, ferr)
+			}
+			return newAreaInfoState(hi.Xuid, hi.Order, areaID, maps, mapCount, fierce)
 		}
 	}
 	return CreateAreaInfoState(hi.Xuid, hi.Order, areaID)

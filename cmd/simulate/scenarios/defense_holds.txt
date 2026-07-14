@@ -1,0 +1,15 @@
+# PROGRESSIVE: a battlefield that is attacked but successfully defended never flips or locks.
+#
+#   go run ./cmd/reset -confirm -downscale 20
+#   go run ./cmd/simulate -scenario cmd/simulate/scenarios/defense_holds.txt
+#
+# B pushes occupation into Melton bf 13/1, then A defends and pushes it back. The attacker never overtakes,
+# so there is NO capture and NO lock -- occupation just moves. Watch the "bf 13/1" line stay led by A:
+#   B wins  -> B=300  A=950   (A leads)
+#   B wins  -> B=600  A=650   (A leads, but closing)
+#   A holds -> B=300  A=950   (defender pushes back)
+#   A holds -> B=0    A=1250  (fully repelled)
+13 1 B A win Bravo 300
+13 1 B A win Bravo 300
+13 1 A B win Alpha 300
+13 1 A B win Alpha 300

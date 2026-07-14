@@ -1,23 +1,29 @@
-# HQ fall + revival demo. Run against a freshly reset world:
-#   go run ./cmd/reset -confirm            # seed the war map
+# PROGRESSIVE: HQ fall (dissolution) then revival, driven by real battle-report sequences.
+#
+#   go run ./cmd/reset -confirm -downscale 20
 #   go run ./cmd/simulate -scenario cmd/simulate/scenarios/hq_fall.txt
 #
-# Format: area map attacker defender outcome [winnerTeam] [occ]
+# Ostrov (area 2) is Morskoj's capital, 4 battlefields worth 2 + 1 + 1 + 1 dots. A must out-hold B's dots
+# to take the capital. Taking bf1 (2) leaves B ahead (3 vs 2); taking bf2 (1) as well gives A 3 vs B's 2
+# -> the CAPITAL flips B->A = HQ FALL: dissolution news, B's remaining areas cascade 100% to A, B's
+# DeadFlag is set (guerrilla/asylum/HQ-only) and B is dissolved. Each battlefield is a 3-mission grind.
 #
-# --- Phase 1: A grinds down B's capital (Ostrov = area 2, 4 battlefields) ---
-# Each capture flips one battlefield to A and locks B out of it. When A takes the
-# majority, area 2's owner flips B->A: that is the HQ fall.
-2 1 A B win
-2 2 A B win
-2 3 A B win
-# ^ HQ FALL expected here: dissolution story fires, every OTHER area B still holds
-#   (its home block 4-8 etc.) cascades 100% to A, and B enters revival lockout
-#   (nations: B should now read DISSOLVED, capital lost to A).
+# --- Phase 1: A grinds down Ostrov ---
+2 1 A B win Alpha 300
+2 1 A B win Alpha 300
+2 1 A B win Alpha 300
+2 2 A B win Alpha 300
+2 2 A B win Alpha 300
+2 2 A B win Alpha 300
+# ^ HQ FALL here (capital majority flips to A). Check `nations`: B should read DISSOLVED (lost to A).
 #
-# --- Phase 2: B fights its way back into its capital ---
-# While dissolved B may only contest area 2. Retaking the majority revives it.
-2 1 B A win
-2 2 B A win
-2 3 B A win
-# ^ REVIVAL expected here: "Guerrilla Recaptures Ostrov" (row 8) fires and B's
-#   lockout lifts. Note the cascaded areas (4-8) stay A's -- B must re-earn them.
+# --- Phase 2: B fights back into its capital (revival) ---
+# While dissolved B may only contest area 2. Retaking the capital majority revives it.
+2 1 B A win Bravo 300
+2 1 B A win Bravo 300
+2 1 B A win Bravo 300
+2 2 B A win Bravo 300
+2 2 B A win Bravo 300
+2 2 B A win Bravo 300
+# ^ REVIVAL here: "Guerrilla Recaptures Ostrov" (row 8), B's DeadFlag cleared, lockout lifts. The areas
+#   that cascaded to A in Phase 1 are NOT returned -- B must re-earn them.
