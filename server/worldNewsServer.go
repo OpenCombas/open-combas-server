@@ -180,30 +180,34 @@ type worldNewsServer struct {
 	generateEvents bool
 }
 
-// buildNews serves one page of the news feed (newest first). page N returns events[(N-1)*20 : N*20]; a
-// page past the end returns an empty (count 0) terminator, which the client treats as the end of the list.
-// Only page 1 falls back to the briefing when the whole feed is empty (a not-yet-seeded DB) -- later pages
-// legitimately terminate empty.
-func (s *worldNewsServer) buildNews(hi UserHelloMessage, page int) NewsState {
-	if page < 1 {
-		page = 1
-	}
+// buildNews serves the news feed (newest first). The request's 3rd field is a CATEGORY, NOT a page index:
+// 1 = "recent (unread) news" (the login-flash popup), 2 = "all news" (the News-History screen). Confirmed by
+// the client only EVER sending 1 and 2 -- true pagination would request 3,4,... once the feed exceeds the
+// wire's 20-entry cap; it never does. (An earlier RE misread the two category requests as pages 1/2 and
+// paginated -- that returned events[20:40] for category 2 == empty on a short feed, so News History showed
+// only the briefing.) Both categories therefore return the same newest feed (the 76B wire holds at most 20
+// entries, so "recent" and "all" coincide). News History reads category 2's reply, which the query-end memcpy
+// (title sub_8242FBE0) copies over the cache -- so category 2 MUST carry the events, not an empty terminator.
+// The briefing fallback keeps the reply non-zero-count (a zero-count reply is rejected as "communication
+// failed"), matching the pre-dynamic-events static news that always returned a non-empty board.
+func (s *worldNewsServer) buildNews(hi UserHelloMessage, category int) NewsState {
 	var evs []EventRecord
-	// With event generation disabled, the board shows only the briefing (page 1); we never read the feed, so
-	// any stale/generated events sitting in the DB stay hidden. Falls through to the empty-feed branch below.
+	// With event generation disabled the board shows only the briefing; we never read the feed, so any
+	// stale/generated events sitting in the DB stay hidden. Falls through to the empty-feed briefing below.
 	if s.repo != nil && s.generateEvents {
 		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 		defer cancel()
-		got, err := s.repo.RecentEventsPage(readCtx, (page-1)*newsPageSize, newsPageSize)
+		got, err := s.repo.RecentEventsPage(readCtx, 0, newsPageSize)
 		if err != nil {
 			logging.Warn.Printf("[%s] events read failed, using briefing: %v", s.serverConfig.Label, err)
 		} else {
 			evs = got
 		}
 	}
-	if len(evs) == 0 && page == 1 {
+	if len(evs) == 0 {
 		evs = []EventRecord{briefingEvent(time.Now().Unix())}
 	}
+	_ = category // both categories serve the same newest feed (see above)
 	return newsFromEvents(hi.Xuid, hi.Order, evs)
 }
 
