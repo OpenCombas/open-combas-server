@@ -231,6 +231,23 @@ func (r *WorldRepository) RecentEventsPage(ctx context.Context, skip, limit int)
 	return out, nil
 }
 
+// SeededBriefing returns the reset-seeded "War Breaks Out" briefing (the oldest row-initEventRow event),
+// or (nil, nil) if none. Its CreatedAt is the season-start time; the news server serves it (rather than a
+// freshly-stamped briefing) as the empty-category fallback so the client doesn't re-flash it every query.
+func (r *WorldRepository) SeededBriefing(ctx context.Context) (*EventRecord, error) {
+	var ev EventRecord
+	err := r.events.FindOne(ctx,
+		bson.M{"templateId": int32(initEventRow)},
+		options.FindOne().SetSort(bson.D{{Key: "createdAt", Value: 1}})).Decode(&ev)
+	if err == mongo.ErrNoDocuments {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ev, nil
+}
+
 // NationAreaCounts returns how many areas each nation currently controls, keyed by nation char 'A'/'B'/'C'.
 // An area is controlled by the nation that leads the most of its battlefields (see areaSummaryFrom).
 func (r *WorldRepository) NationAreaCounts(ctx context.Context) (map[byte]int, error) {
@@ -427,17 +444,21 @@ func (r *WorldRepository) NationBattleCount(ctx context.Context, nation byte) (i
 
 // SetNationHQLost marks a nation as dissolved (its capital fell to captor). ClearNationHQLost reverses
 // it on revival. NationHQLostTo reads the captor char (0 if the nation is not dissolved / unknown).
+//
+// These also drive DeadFlag: the wire NationData.DeadFlag is the client's "defeated nation" signal
+// (map pulse for its members, squad defection, HQ-only sorties), so a dissolved nation sets it and a
+// revived nation clears it -- keeping the DB deadFlag in lockstep with the dissolved state.
 func (r *WorldRepository) SetNationHQLost(ctx context.Context, nation, captor byte) error {
 	_, err := r.nations.UpdateOne(ctx,
 		bson.M{"countryCode": string(nation)},
-		bson.M{"$set": bson.M{"hqLostTo": string(captor)}})
+		bson.M{"$set": bson.M{"hqLostTo": string(captor), "deadFlag": int32(1)}})
 	return err
 }
 
 func (r *WorldRepository) ClearNationHQLost(ctx context.Context, nation byte) error {
 	_, err := r.nations.UpdateOne(ctx,
 		bson.M{"countryCode": string(nation)},
-		bson.M{"$unset": bson.M{"hqLostTo": ""}})
+		bson.M{"$set": bson.M{"deadFlag": int32(0)}, "$unset": bson.M{"hqLostTo": ""}})
 	return err
 }
 

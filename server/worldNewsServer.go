@@ -260,9 +260,26 @@ func (s *worldNewsServer) buildNews(hi UserHelloMessage, nation byte, category i
 	// serves the briefing. (Until political events are generated, the political category is always empty
 	// and thus shows the briefing -- see the category-split note above.)
 	if len(evs) == 0 {
-		evs = []EventRecord{briefingEvent(time.Now().Unix())}
+		evs = []EventRecord{s.fallbackBriefing()}
 	}
 	return newsFromEvents(hi.Xuid, hi.Order, evs)
+}
+
+// fallbackBriefing returns the empty-category filler: the reset-seeded briefing carrying its ORIGINAL
+// season-start timestamp. The client only flashes RECENT news, so serving a freshly-stamped briefing on
+// every query re-pops "War Breaks Out" every couple of minutes; the seeded event ages out after reset and
+// stops flashing. Synthesizes a fresh briefing only when the DB has no seed (e.g. never reset / no repo).
+func (s *worldNewsServer) fallbackBriefing() EventRecord {
+	if s.repo != nil {
+		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+		defer cancel()
+		if ev, err := s.repo.SeededBriefing(readCtx); err != nil {
+			logging.Warn.Printf("[%s] seeded-briefing read failed, using fresh briefing: %v", s.serverConfig.Label, err)
+		} else if ev != nil {
+			return *ev
+		}
+	}
+	return briefingEvent(time.Now().Unix())
 }
 
 func NewWorldNewsServer(listenAddress net.IP, serverConfig config.EventServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *WorldRepository) *worldNewsServer {

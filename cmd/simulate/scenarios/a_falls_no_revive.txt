@@ -1,0 +1,15 @@
+# Nation A's capital (Xeres = area 1, 4 battlefields) falls to B, and A does NOT revive.
+# Use to observe the defeated-nation state: A dissolved (DeadFlag set), its areas cascaded to B, and A
+# left in revival lockout with no recovery.
+#
+#   go run ./cmd/reset -confirm
+#   go run ./cmd/simulate -scenario cmd/simulate/scenarios/a_falls_no_revive.txt
+#
+# Format: area map attacker defender outcome [winnerTeam] [occ]
+#
+# B grinds down Xeres until it flips B majority -> HQ fall.
+1 1 B A win
+1 2 B A win
+1 3 B A win
+# ^ HQ FALL expected here: dissolution story fires, A's remaining areas cascade 100% to B, A enters
+#   revival lockout and its DeadFlag is set. No further lines -> A stays defeated (no revival).
