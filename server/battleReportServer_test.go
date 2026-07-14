@@ -83,6 +83,28 @@ func TestParseBattleReport(t *testing.T) {
 	}
 }
 
+// TestLeadAfterDelta covers the capture trigger: a battlefield changes hands only when a mission's
+// occupation shift makes the attacker overtake the holder -- a single mission never flips a full one.
+func TestLeadAfterDelta(t *testing.T) {
+	const cap = 1250
+	// Fresh battlefield fully held by A: one B win (+16) only chips occupation; lead stays A.
+	if got := leadAfterDelta(Battlefield{Capacity: cap, OccA: cap}, 'B', 'A', 16); got != 'A' {
+		t.Errorf("fresh bf, one B win -> lead %q, want 'A' (no single-mission flip)", got)
+	}
+	// Contested at the boundary: a B win that pulls it ahead flips the lead (crossover -> capture).
+	if got := leadAfterDelta(Battlefield{Capacity: cap, OccA: 630, OccB: 620}, 'B', 'A', 16); got != 'B' {
+		t.Errorf("B overtakes -> lead %q, want 'B' (crossover)", got)
+	}
+	// A B win that's still short of overtaking leaves the lead with A.
+	if got := leadAfterDelta(Battlefield{Capacity: cap, OccA: 660, OccB: 620}, 'B', 'A', 16); got != 'A' {
+		t.Errorf("B short of overtaking -> lead %q, want 'A'", got)
+	}
+	// Successful defence (holder A wins) keeps A and never flips.
+	if got := leadAfterDelta(Battlefield{Capacity: cap, OccA: 700, OccB: 550}, 'A', 'B', 16); got != 'A' {
+		t.Errorf("A defends -> lead %q, want 'A'", got)
+	}
+}
+
 // TestBattleReportIngestLive exercises the winner-takes-all capture + lock primitives and squad-stat
 // accumulation against a real Mongo.
 func TestBattleReportIngestLive(t *testing.T) {

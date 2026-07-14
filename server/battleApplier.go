@@ -66,7 +66,11 @@ func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
 // hands.
 func (s *BattleApplier) applyBattle(ctx context.Context, res BattleResult, bf Battlefield) {
 	beforeLead := bfLead(bf)
-	changedHands := beforeLead != 0 && res.WinnerNation != beforeLead
+	// A mission ADDS its OccDelta to the winner and removes it from the loser; the battlefield only changes
+	// hands once that accumulated shift makes the attacker OVERTAKE the current holder. So capture is gated
+	// on the post-shift lead crossing over -- not on merely winning a single mission here.
+	newLead := leadAfterDelta(bf, res.WinnerNation, res.LoserNation, res.OccDelta)
+	changedHands := beforeLead != 0 && newLead != 0 && newLead != beforeLead
 
 	// Area owner before the battle -- needed to detect an area surrender / HQ fall and fire events.
 	var beforeOwner byte
@@ -86,8 +90,8 @@ func (s *BattleApplier) applyBattle(ctx context.Context, res BattleResult, bf Ba
 	}
 
 	if changedHands {
-		// Flip the battlefield to the winner and lock out the former holder until it fights
-		// UnlockBattleThreshold more battles. The former holder is normally the losing combatant.
+		// Crossover -> winner-takes-all: snap the battlefield to 100% for the winner and lock out the former
+		// holder until it fights UnlockBattleThreshold more battles. The former holder is normally the loser.
 		defeated := beforeLead
 		defeatedCount := loserCount
 		if defeated != res.LoserNation {
@@ -96,6 +100,9 @@ func (s *BattleApplier) applyBattle(ctx context.Context, res BattleResult, bf Ba
 		if err := s.worldRepo.CaptureBattlefield(ctx, int32(res.AreaID), int32(res.MapID), res.WinnerNation, defeated, defeatedCount+UnlockBattleThreshold); err != nil {
 			logging.Warn.Printf("[%s] capture flip %d/%d failed: %v", s.label, res.AreaID, res.MapID, err)
 		}
+	} else if err := s.worldRepo.ApplyBattleOccupation(ctx, res.AreaID, res.MapID, res.WinnerNation, res.LoserNation, res.OccDelta); err != nil {
+		// No capture yet -> just accumulate this mission's occupation toward a future crossover.
+		logging.Warn.Printf("[%s] occupation shift %d/%d failed: %v", s.label, res.AreaID, res.MapID, err)
 	}
 
 	// This battle may have carried either nation past a lock it was waiting out.

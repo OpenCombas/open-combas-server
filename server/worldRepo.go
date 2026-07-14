@@ -348,14 +348,72 @@ func occField(nation byte) string {
 	return ""
 }
 
-// bfLead returns the nation ('A'/'B'/'C') that holds a battlefield, or 0 if none has any occupation.
-// Under the winner-takes-all capture model a held battlefield sits at 100% for exactly one nation.
+// bfLead returns the nation ('A'/'B'/'C') currently leading a battlefield's occupation, or 0 if none has
+// any. During the accumulation phase a battlefield can be contested (both nations hold some occupation);
+// once captured it snaps to 100% for one nation and locks.
 func bfLead(b Battlefield) byte {
 	idx, level := leadFaction(b.OccA, b.OccB, b.OccC)
 	if level == 0 {
 		return 0
 	}
 	return nationChar(idx)
+}
+
+// occIndexOf maps a nation char to its occ-array index (A=0/B=1/C=2), -1 for unknown.
+func occIndexOf(nation byte) int {
+	switch nation {
+	case 'A':
+		return 0
+	case 'B':
+		return 1
+	case 'C':
+		return 2
+	}
+	return -1
+}
+
+// leadAfterDelta returns the battlefield's leading nation AFTER a mission's occupation shift (winner
+// +delta capped at capacity, loser -delta floored at 0) -- computed WITHOUT writing. applyBattle uses it
+// to detect the crossover: a battlefield is captured only when this post-shift lead differs from the prior
+// holder (the attacker has overtaken), not merely because someone won a mission there.
+func leadAfterDelta(bf Battlefield, winner, loser byte, delta int32) byte {
+	occ := [3]int32{bf.OccA, bf.OccB, bf.OccC}
+	if wi := occIndexOf(winner); wi >= 0 {
+		if occ[wi] += delta; occ[wi] > bf.Capacity {
+			occ[wi] = bf.Capacity
+		}
+	}
+	if li := occIndexOf(loser); li >= 0 {
+		if occ[li] -= delta; occ[li] < 0 {
+			occ[li] = 0
+		}
+	}
+	if idx, level := leadFaction(occ[0], occ[1], occ[2]); level > 0 {
+		return nationChar(idx)
+	}
+	return 0
+}
+
+// ApplyBattleOccupation shifts occupation on one battlefield after a NON-capturing mission: the winner
+// gains `delta` (capped at capacity), the loser loses `delta` (floored at 0). This is the accumulation
+// phase -- the battlefield only flips 100% + locks once the attacker overtakes the holder (see
+// applyBattle). Atomic clamp via a pipeline update; no-op for an unknown winner or 0 delta.
+func (r *WorldRepository) ApplyBattleOccupation(ctx context.Context, areaID, mapID, winnerNation, loserNation byte, delta int32) error {
+	winField, loseField := occField(winnerNation), occField(loserNation)
+	if winField == "" || delta == 0 {
+		return nil
+	}
+	set := bson.M{
+		winField: bson.M{"$min": bson.A{bson.M{"$add": bson.A{"$" + winField, delta}}, "$capacity"}},
+	}
+	if loseField != "" && loseField != winField {
+		set[loseField] = bson.M{"$max": bson.A{bson.M{"$subtract": bson.A{"$" + loseField, delta}}, int32(0)}}
+	}
+	_, err := r.battlefields.UpdateOne(ctx,
+		bson.M{"areaId": int32(areaID), "mapId": int32(mapID)},
+		mongo.Pipeline{{{Key: "$set", Value: set}}},
+	)
+	return err
 }
 
 // captureSet builds the pipeline $set that flips a battlefield 100% to `winner` and locks out
