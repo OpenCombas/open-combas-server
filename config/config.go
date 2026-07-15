@@ -89,6 +89,7 @@ const (
 	SquadMemberNum ServerType = "SquadMemberNum"
 	SquadEmblem    ServerType = "SquadEmblem"
 	SquadRanking   ServerType = "SquadRanking"
+	SquadHistory   ServerType = "SquadHistory"
 	BattleReport   ServerType = "BattleReport"
 	Buffer         ServerType = "Buffer"
 	OrderedMessage ServerType = "OrderedMessage"

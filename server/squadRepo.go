@@ -30,6 +30,7 @@ const (
 	profilesCollection = "combasProfiles"
 	countersCollection = "combasCounters"
 	statsCollection    = "squadStats"
+	historyCollection  = "squadHistory"
 
 	teamSeqName = "team"
 	userSeqName = "user"
@@ -120,6 +121,7 @@ type SquadRepository struct {
 	profiles *mongo.Collection
 	counters *mongo.Collection
 	stats    *mongo.Collection
+	history  *mongo.Collection
 }
 
 func NewSquadRepository(store *persistence.Store) *SquadRepository {
@@ -128,6 +130,7 @@ func NewSquadRepository(store *persistence.Store) *SquadRepository {
 		profiles: store.Collection(profilesCollection),
 		counters: store.Collection(countersCollection),
 		stats:    store.Collection(statsCollection),
+		history:  store.Collection(historyCollection),
 	}
 }
 
@@ -268,9 +271,15 @@ func (r *SquadRepository) EnsureSchema(ctx context.Context) error {
 	}); err != nil {
 		return err
 	}
-	_, err := r.stats.Indexes().CreateOne(ctx, mongo.IndexModel{
+	if _, err := r.stats.Indexes().CreateOne(ctx, mongo.IndexModel{
 		Keys:    bson.D{{Key: "teamId", Value: 1}},
 		Options: options.Index().SetUnique(true),
+	}); err != nil {
+		return err
+	}
+	// Squad history is read newest-first per squad; index (teamId, createdAt desc) covers that query.
+	_, err := r.history.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "teamId", Value: 1}, {Key: "createdAt", Value: -1}},
 	})
 	return err
 }
@@ -376,6 +385,7 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, xuid, userID
 	// mis-adopted leader US.
 	memberXUID := sq.Members[idx].XUID
 	memberUserID := sq.Members[idx].UserID
+	memberName := historyName(sq.Members[idx].Name, sq.Members[idx].Gamertag)
 	if len(sq.Members) <= 1 {
 		// Last member leaving -> disband the squad entirely.
 		if _, err := r.squads.DeleteOne(ctx, bson.M{"teamId": teamID}); err != nil {
@@ -394,6 +404,11 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, xuid, userID
 	if memberXUID != "" {
 		_, _ = r.profiles.UpdateOne(ctx, bson.M{"xuid": memberXUID}, bson.M{"$set": bson.M{"teamId": ""}})
 	}
+	// Log a "left the squad" history event (type 3). Best-effort, same as the join hook. When the last
+	// member leaves the squad disbands (doc deleted above); the history rows survive that deletion so a
+	// re-created squad of the same id would inherit stale history -- acceptable since ids are monotonic and
+	// never reused (see formatTeamID).
+	_ = r.RecordSquadLeft(ctx, teamID, memberName)
 	return '1', nil // Delete Complete
 }
 
@@ -506,6 +521,10 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 	); err != nil {
 		return 0, "", err
 	}
+	// Log a "joined the squad" history event (type 2). Only on a genuine new-member push -- an idempotent
+	// re-commit of an existing member returns above and records nothing. Best-effort: the join itself has
+	// already succeeded and must return its status regardless of the history write.
+	_ = r.RecordSquadJoined(ctx, teamID, historyName(name, gamertag))
 	return '1', profile.UserID, nil
 }
 
