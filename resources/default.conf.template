@@ -1,15 +1,56 @@
 server {
-    listen 80;
-    server_name localhost;
+    server_name ${HOSTNAME};
 
     location / {
-        # Route requests directly to the service name defined in docker-compose
-        proxy_pass http://${WS_IP}:36000; 
-        
-        # Forward critical client connection details to the backend
+        proxy_pass http://webservices:36000/;
+
+        # WebSocket mandatory configuration
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
     }
+
+    location /relay {
+        proxy_pass http://gns-relay:8080/relay;
+
+        # WebSocket mandatory configuration
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+
+
+
+
+
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/${HOSTNAME}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${HOSTNAME}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+}
+
+server {
+    server_name ${HOSTNAME};
+    listen 80;
+    return 301 https://$host$request_uri;
+
+
 }
