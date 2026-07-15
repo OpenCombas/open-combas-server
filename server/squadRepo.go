@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -408,7 +409,7 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, xuid, userID
 	// member leaves the squad disbands (doc deleted above); the history rows survive that deletion so a
 	// re-created squad of the same id would inherit stale history -- acceptable since ids are monotonic and
 	// never reused (see formatTeamID).
-	_ = r.RecordSquadLeft(ctx, teamID, memberName)
+	_ = r.RecordSquadLeft(ctx, teamID, memberName, time.Now())
 	return '1', nil // Delete Complete
 }
 
@@ -521,10 +522,13 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 	); err != nil {
 		return 0, "", err
 	}
+	// Single-squad invariant: joining removes the player from any squad they were still in (going forward
+	// this stops the multi-squad accumulation; existing dupes are cleaned by cmd/reconcile-squads).
+	r.leaveOtherSquads(ctx, xuid, teamID)
 	// Log a "joined the squad" history event (type 2). Only on a genuine new-member push -- an idempotent
 	// re-commit of an existing member returns above and records nothing. Best-effort: the join itself has
 	// already succeeded and must return its status regardless of the history write.
-	_ = r.RecordSquadJoined(ctx, teamID, historyName(name, gamertag))
+	_ = r.RecordSquadJoined(ctx, teamID, historyName(name, gamertag), time.Now())
 	return '1', profile.UserID, nil
 }
 
@@ -646,5 +650,7 @@ func (r *SquadRepository) CreateSquad(ctx context.Context, name, faction string,
 	); err != nil {
 		return nil, err
 	}
+	// Single-squad invariant: creating a squad removes the creator from any squad they were still in.
+	r.leaveOtherSquads(ctx, leader.XUID, squad.TeamID)
 	return squad, nil
 }

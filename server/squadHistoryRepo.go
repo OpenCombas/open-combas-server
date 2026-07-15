@@ -53,20 +53,44 @@ func (r *SquadRepository) RecordSquadHistory(ctx context.Context, ev SquadHistor
 	return err
 }
 
-// RecordSquadJoined logs a "<name> has joined the squad" event (type 2).
-func (r *SquadRepository) RecordSquadJoined(ctx context.Context, teamID, name string) error {
+// stamp applies an explicit event time to a builder result: a zero `when` leaves CreatedAt at 0 so
+// RecordSquadHistory defaults it to now (the live-recording path); a set `when` lets seed/admin tools lay
+// down a specific timeline.
+func stamp(ev SquadHistoryEvent, when time.Time) SquadHistoryEvent {
+	if !when.IsZero() {
+		ev.CreatedAt = when.Unix()
+	}
+	return ev
+}
+
+// RecordSquadJoined logs a "<name> has joined the squad" event (type 2). Pass a zero time.Time for "now".
+func (r *SquadRepository) RecordSquadJoined(ctx context.Context, teamID, name string, when time.Time) error {
 	if !isRealTeam(teamID) {
 		return nil // AI/CPU placeholder squads keep no history
 	}
-	return r.RecordSquadHistory(ctx, SquadHistoryEvent{TeamID: teamID, Type: historyTypeJoined, Name: name})
+	return r.RecordSquadHistory(ctx, stamp(SquadHistoryEvent{TeamID: teamID, Type: historyTypeJoined, Name: name}, when))
 }
 
-// RecordSquadLeft logs a "<name> has left the squad" event (type 3).
-func (r *SquadRepository) RecordSquadLeft(ctx context.Context, teamID, name string) error {
+// RecordSquadLeft logs a "<name> has left the squad" event (type 3). Pass a zero time.Time for "now".
+func (r *SquadRepository) RecordSquadLeft(ctx context.Context, teamID, name string, when time.Time) error {
 	if !isRealTeam(teamID) {
 		return nil
 	}
-	return r.RecordSquadHistory(ctx, SquadHistoryEvent{TeamID: teamID, Type: historyTypeLeft, Name: name})
+	return r.RecordSquadHistory(ctx, stamp(SquadHistoryEvent{TeamID: teamID, Type: historyTypeLeft, Name: name}, when))
+}
+
+// RecordSquadGrade logs a squad grade change: up=true -> "gone up to %s" (type 4), else "gone down to %s"
+// (type 5). gradeIdx is the new grade index (1..13 -> FMG 5700+idx). No live generator recomputes squad
+// grade yet, so this is used by seed/admin tools; kept exported for the eventual ranking-driven hook.
+func (r *SquadRepository) RecordSquadGrade(ctx context.Context, teamID string, gradeIdx int32, up bool, when time.Time) error {
+	if !isRealTeam(teamID) {
+		return nil
+	}
+	t := int32(historyTypeGradeDown)
+	if up {
+		t = historyTypeGradeUp
+	}
+	return r.RecordSquadHistory(ctx, stamp(SquadHistoryEvent{TeamID: teamID, Type: t, GradeIdx: gradeIdx}, when))
 }
 
 // RecordSquadBattle logs an "Invading <map>" (type 6) or "Defensive deployment to <map>" (type 7) event
@@ -74,7 +98,7 @@ func (r *SquadRepository) RecordSquadLeft(ctx context.Context, teamID, name stri
 // a defence of its own. NOT yet wired into the battle-report ingest -- the attacker/defender split needs
 // the fought area's owner at battle time, which lives in the BattleApplier; see the TODO in
 // squadHistoryServer.go and server.md S-Q. Kept here so the ingest hook is a one-line call once confirmed.
-func (r *SquadRepository) RecordSquadBattle(ctx context.Context, teamID string, areaID, mapID int32, invading bool) error {
+func (r *SquadRepository) RecordSquadBattle(ctx context.Context, teamID string, areaID, mapID int32, invading bool, when time.Time) error {
 	if !isRealTeam(teamID) {
 		return nil
 	}
@@ -82,7 +106,17 @@ func (r *SquadRepository) RecordSquadBattle(ctx context.Context, teamID string, 
 	if invading {
 		t = historyTypeInvading
 	}
-	return r.RecordSquadHistory(ctx, SquadHistoryEvent{TeamID: teamID, Type: t, AreaID: areaID, MapID: mapID})
+	return r.RecordSquadHistory(ctx, stamp(SquadHistoryEvent{TeamID: teamID, Type: t, AreaID: areaID, MapID: mapID}, when))
+}
+
+// ClearSquadHistory deletes all history rows for a squad, returning the number removed. Used by seed/admin
+// tooling to reset a squad's feed before re-seeding.
+func (r *SquadRepository) ClearSquadHistory(ctx context.Context, teamID string) (int64, error) {
+	res, err := r.history.DeleteMany(ctx, bson.M{"teamId": teamID})
+	if err != nil {
+		return 0, err
+	}
+	return res.DeletedCount, nil
 }
 
 // RecentSquadHistory returns a squad's newest events first, capped at limit. An empty history (or unknown

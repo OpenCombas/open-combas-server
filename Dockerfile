@@ -17,6 +17,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reset .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/capture ./cmd/capture
 # sim tool
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/simulate ./cmd/simulate
+# seed history
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/seedhistory ./cmd/seedhistory
+# reconcile squads
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reconcile-squads ./cmd/reconcile-squads
 
 # ---- runtime stage ----
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -26,6 +30,8 @@ COPY --from=build /out/combas-server /app/combas-server
 COPY --from=build /out/reset /app/reset
 COPY --from=build /out/capture /app/capture
 COPY --from=build /out/simulate /app/simulate
+COPY --from=build /out/seedhistory /app/seedhistory
+COPY --from=build /out/reconcile-squads /app/reconcile-squads
 COPY --from=build /src/cmd/simulate/scenarios /app/
 # Baked default config; MONGO_URI / MONGO_DATABASE / LISTENING_ADDRESS env vars override at runtime.
 COPY config.toml /app/config.toml
