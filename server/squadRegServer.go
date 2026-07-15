@@ -120,6 +120,9 @@ func (s *squadRegServer) buildReg(hi UserHelloMessage, packet []byte) SquadRegSt
 		return CreateSquadRegState(hi.Xuid, hi.Order)
 	}
 
+	// The 181 body carries the creator's OWN gamertag (reliable) -- refresh the profile in case it was
+	// frozen to a mis-sourced value by an earlier 182 join (EnsureProfile only sets gamertag on insert).
+	s.repo.RefreshGamertag(readCtx, string(hi.Xuid[:]), gamertag)
 	logging.Info.Printf("[%s] created squad %q (%s) faction %q for %s", s.serverConfig.Label, name, squad.TeamID, faction, gamertag)
 	return squadRegState(hi.Xuid, hi.Order, '1', squad.TeamID, profile.UserID)
 }

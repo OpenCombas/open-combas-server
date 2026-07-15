@@ -289,13 +289,18 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 		return CreateSquadLoginState(hi, packet)
 	}
 
-	_, teamID := parseSquadLogin(packet)
-	if teamIDIsEmpty(teamID) {
-		return noTeamLoginState(hi)
-	}
+	gamertag, teamID := parseSquadLogin(packet)
 
 	readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 	defer cancel()
+
+	// The 184 body carries the caller's OWN gamertag (reliable) -- refresh the profile + roster entry so a
+	// joiner whose profile was frozen to a mis-sourced tag at 182-join time is corrected when they log in.
+	s.repo.RefreshGamertag(readCtx, string(hi.Xuid[:]), gamertag)
+
+	if teamIDIsEmpty(teamID) {
+		return noTeamLoginState(hi)
+	}
 	squad, err := s.repo.SquadByTeamID(readCtx, teamID)
 	if err != nil {
 		logging.Warn.Printf("[%s] mongo lookup failed, using static record: %v", s.serverConfig.Label, err)

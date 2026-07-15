@@ -138,6 +138,32 @@ func (r *SquadRepository) leaveOtherSquads(ctx context.Context, xuid, keepTeamID
 	}
 }
 
+// RefreshGamertag corrects a player's gamertag from a RELIABLE self-report — their OWN squad-reg (181) or
+// squad-login (184), where parts[0] is the caller's own tag. This repairs the mis-sourced gamertag the host
+// bakes in during a 182 join: the host sources the join body's gamertag from the squad lead / a prior
+// member, so members land in the DB with someone else's tag, and EnsureProfile (which only sets gamertag on
+// insert) then freezes that wrong tag onto a newly-created profile. Updates the persistent profile AND the
+// player's roster entry in whatever squad currently lists them. No-op on an empty gamertag or when already
+// current (guarded by $ne), and best-effort — never fatal to the reg/login it rides on.
+func (r *SquadRepository) RefreshGamertag(ctx context.Context, xuid, gamertag string) {
+	if xuid == "" || gamertag == "" {
+		return
+	}
+	if _, err := r.profiles.UpdateOne(ctx,
+		bson.M{"xuid": xuid, "gamertag": bson.M{"$ne": gamertag}},
+		bson.M{"$set": bson.M{"gamertag": gamertag}},
+	); err != nil {
+		logging.Warn.Printf("[squad] RefreshGamertag profile %s failed: %v", xuid, err)
+	}
+	// $elemMatch so the positional $ targets the caller's own roster entry (and only when it differs).
+	if _, err := r.squads.UpdateOne(ctx,
+		bson.M{"members": bson.M{"$elemMatch": bson.M{"xuid": xuid, "gamertag": bson.M{"$ne": gamertag}}}},
+		bson.M{"$set": bson.M{"members.$.gamertag": gamertag}},
+	); err != nil {
+		logging.Warn.Printf("[squad] RefreshGamertag member %s failed: %v", xuid, err)
+	}
+}
+
 // --- orchestration (I/O) ---
 
 // ReconcileReport summarises what the reconciler did (or would do on a dry run).
