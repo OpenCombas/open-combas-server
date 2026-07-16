@@ -6,4 +6,4 @@
 # use at your own risk. 
 ###############################################################################################################
 source .env
-setfacl -R -m u:${whoami}:rx /etc/letsencrypt/live/${HOSTNAME} /etc/letsencrypt/archive/${HOSTNAME} /etc/letsencrypt/ssl-dhparams.pem /etc/letsencrypt/options-ssl-nginx.conf
+setfacl -R -m u:$(whoami):rx /etc/letsencrypt/live/${HOSTNAME} /etc/letsencrypt/archive/${HOSTNAME} /etc/letsencrypt/ssl-dhparams.pem /etc/letsencrypt/options-ssl-nginx.conf
