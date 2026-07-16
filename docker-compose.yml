@@ -111,8 +111,25 @@ services:
     networks:
       - opencombas
 
+  # Ships the stack's container logs DIRECTLY to the Loki backend (not via xenia-log-ingest, which is only
+  # for client-uploaded gzip logs). Discovers containers over the Docker socket; config in resources/.
+  promtail:
+    image: grafana/promtail:3.0.0
+    restart: unless-stopped
+    # -config.expand-env expands ${LOKI_PUSH_URL} in the config from the environment.
+    command: -config.file=/etc/promtail/promtail-config.yaml -config.expand-env=true
+    environment:
+      LOKI_PUSH_URL: "${LOKI_PUSH_URL:?set LOKI_PUSH_URL in .env}"
+    volumes:
+      - ./resources/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/promtail
+    networks:
+      - opencombas
+
 volumes:
   mongo-data:
+  promtail-positions:
 
 networks:
   opencombas:

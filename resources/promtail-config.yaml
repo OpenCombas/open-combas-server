@@ -1,0 +1,30 @@
+# Promtail: tails the stack's container logs (via the Docker socket) and ships them DIRECTLY to the Loki
+# backend's push API — NOT through xenia-log-ingest (that's only for client-uploaded gzip logs). Labels stay
+# low-cardinality: job=combas-stack + container name + stream (stdout/stderr). Filter in Grafana by container.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /promtail/positions.yaml
+
+clients:
+  # Loki push endpoint (e.g. https://monitoring.opencombas.org/loki/api/v1/push — the /loki/ route on the
+  # monitoring edge nginx preserves the /loki prefix). Sourced from $LOKI_PUSH_URL; requires promtail to run
+  # with `-config.expand-env=true` (set in docker-compose). NOTE: currently unauthenticated — a hardening
+  # item (basic_auth here + on the /loki route) if the backend is ever exposed beyond the trusted network.
+  - url: ${LOKI_PUSH_URL}
+
+scrape_configs:
+  - job_name: containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 15s
+    relabel_configs:
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/?(.*)'
+        target_label: container
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: stream
+      - target_label: job
+        replacement: combas-stack
