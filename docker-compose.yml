@@ -122,6 +122,9 @@ services:
       LOKI_PUSH_URL: "${LOKI_PUSH_URL:?set LOKI_PUSH_URL in .env}"
       # Labels this deployment's logs on the shared Loki (e.g. production or testenv).
       ENVIRONMENT: "${ENVIRONMENT:?set ENVIRONMENT in .env (e.g. production or testenv)}"
+      # basic_auth creds for the /loki push route (matches an entry in the edge's loki.htpasswd).
+      LOKI_USERNAME: "${LOKI_USERNAME:?set LOKI_USERNAME in .env}"
+      LOKI_PASSWORD: "${LOKI_PASSWORD:?set LOKI_PASSWORD in .env}"
     volumes:
       - ./resources/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro

@@ -12,9 +12,12 @@ positions:
 clients:
   # Loki push endpoint (e.g. https://monitoring.opencombas.org/loki/api/v1/push — the /loki/ route on the
   # monitoring edge nginx preserves the /loki prefix). Sourced from $LOKI_PUSH_URL; requires promtail to run
-  # with `-config.expand-env=true` (set in docker-compose). NOTE: currently unauthenticated — a hardening
-  # item (basic_auth here + on the /loki route) if the backend is ever exposed beyond the trusted network.
+  # with `-config.expand-env=true` (set in docker-compose). The /loki route is guarded by basic_auth on
+  # the monitoring edge; creds are env-sourced (set LOKI_USERNAME / LOKI_PASSWORD in .env).
   - url: ${LOKI_PUSH_URL}
+    basic_auth:
+      username: ${LOKI_USERNAME}
+      password: ${LOKI_PASSWORD}
 
 scrape_configs:
   - job_name: containers
