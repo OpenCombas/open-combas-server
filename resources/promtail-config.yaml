@@ -1,6 +1,7 @@
 # Promtail: tails the stack's container logs (via the Docker socket) and ships them DIRECTLY to the Loki
 # backend's push API — NOT through xenia-log-ingest (that's only for client-uploaded gzip logs). Labels stay
-# low-cardinality: job=combas-stack + container name + stream (stdout/stderr). Filter in Grafana by container.
+# low-cardinality: environment (prod/testenv, from $ENVIRONMENT) + job=combas-stack + container + stream
+# (stdout/stderr). Multiple deployments ship to one shared Loki; filter in Grafana by environment/container.
 server:
   http_listen_port: 9080
   grpc_listen_port: 0
@@ -28,3 +29,6 @@ scrape_configs:
         target_label: stream
       - target_label: job
         replacement: combas-stack
+      # Distinguishes deployments (prod vs testenv) on the shared Loki. From $ENVIRONMENT (config.expand-env).
+      - target_label: environment
+        replacement: ${ENVIRONMENT}

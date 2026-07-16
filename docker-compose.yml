@@ -120,6 +120,8 @@ services:
     command: -config.file=/etc/promtail/promtail-config.yaml -config.expand-env=true
     environment:
       LOKI_PUSH_URL: "${LOKI_PUSH_URL:?set LOKI_PUSH_URL in .env}"
+      # Labels this deployment's logs on the shared Loki (e.g. production or testenv).
+      ENVIRONMENT: "${ENVIRONMENT:?set ENVIRONMENT in .env (e.g. production or testenv)}"
     volumes:
       - ./resources/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro
