@@ -32,6 +32,9 @@ const (
 	countersCollection = "combasCounters"
 	statsCollection    = "squadStats"
 	historyCollection  = "squadHistory"
+	// playersCollection is the Xenia-WebServices logins collection (same shared DB): the authoritative
+	// xuid->gamertag, set from each console's own login. Read-only from here.
+	playersCollection = "players"
 
 	teamSeqName = "team"
 	userSeqName = "user"
@@ -67,11 +70,11 @@ type SquadMemberRecord struct {
 // Field labels are inferred from differential capture analysis (create vs change-settings) and the
 // create-menu order; the values are stored verbatim so they round-trip regardless of exact labelling.
 type SquadSettings struct {
-	Stance    int32  `bson:"stance"`    // blob[50] - "Stance"
-	Activity  int32  `bson:"activity"`  // blob[51] - "Activity Level"
-	Language  int32  `bson:"language"`  // blob[52] - "Language"
-	Regions   int32  `bson:"regions"`   // blob[53] - "Connected Regions" (likely a bitmask)
-	RoleFlags int32  `bson:"roleFlags"` // blob[54] - 6-bit role bitmask (0x3f = all six on)
+	Stance    int32  `bson:"stance"`           // blob[50] - "Stance"
+	Activity  int32  `bson:"activity"`         // blob[51] - "Activity Level"
+	Language  int32  `bson:"language"`         // blob[52] - "Language"
+	Regions   int32  `bson:"regions"`          // blob[53] - "Connected Regions" (likely a bitmask)
+	RoleFlags int32  `bson:"roleFlags"`        // blob[54] - 6-bit role bitmask (0x3f = all six on)
 	Colors    []byte `bson:"colors,omitempty"` // blob[37..48] - 4 RGB team colours (12 bytes)
 	Patern    int32  `bson:"patern"`           // blob[49] - palette/pattern selector (4 in create, 1 single-colour)
 }
@@ -123,6 +126,7 @@ type SquadRepository struct {
 	counters *mongo.Collection
 	stats    *mongo.Collection
 	history  *mongo.Collection
+	players  *mongo.Collection // webservices logins: authoritative xuid->gamertag (read-only)
 }
 
 func NewSquadRepository(store *persistence.Store) *SquadRepository {
@@ -132,6 +136,7 @@ func NewSquadRepository(store *persistence.Store) *SquadRepository {
 		counters: store.Collection(countersCollection),
 		stats:    store.Collection(statsCollection),
 		history:  store.Collection(historyCollection),
+		players:  store.Collection(playersCollection),
 	}
 }
 
@@ -321,6 +326,23 @@ func (r *SquadRepository) EnsureProfile(ctx context.Context, xuid, gamertag stri
 	return p, nil
 }
 
+// playerGamertag returns the authoritative gamertag for an xuid from the webservices `players` login
+// collection (set from the console's own login), or "" if there is no record / no players collection.
+// Best-effort and read-only: any lookup error yields "" so the caller falls back to its own value and the
+// join is never blocked. Used to avoid persisting the 182 body's mis-sourced (host-stamped) gamertag.
+func (r *SquadRepository) playerGamertag(ctx context.Context, xuid string) string {
+	if r.players == nil || xuid == "" {
+		return ""
+	}
+	var pl struct {
+		Gamertag string `bson:"gamertag"`
+	}
+	if err := r.players.FindOne(ctx, bson.M{"xuid": xuid}).Decode(&pl); err != nil {
+		return ""
+	}
+	return pl.Gamertag
+}
+
 // ProfileByXUID returns a player's persistent profile, or (nil, nil) if they have none yet. Unlike
 // EnsureProfile it never mints -- used to resolve the requester's own assigned User ID (e.g. the squad
 // host's US, to echo back in the 182 join reply) without side effects.
@@ -481,15 +503,29 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 		return '2', "", nil // Member Number Over Error (squad full)
 	}
 
-	profile, err := r.EnsureProfile(ctx, xuid, gamertag)
+	// Don't trust the 182 body's gamertag: the host builder mis-sources it (stamps the host's own tag onto
+	// joiners -- traced in IDA). Prefer, in order, the webservices `players` login (authoritative) then the
+	// body only as a last resort, for a BRAND-NEW profile. EnsureProfile keeps an EXISTING profile's own
+	// gamertag (their prior self-report) regardless of what we pass, so the roster row below takes that.
+	insertGT := gamertag
+	if auth := r.playerGamertag(ctx, xuid); auth != "" {
+		insertGT = auth
+	}
+	profile, err := r.EnsureProfile(ctx, xuid, insertGT)
 	if err != nil {
 		return 0, "", err
+	}
+	// The profile's own tag is authoritative (never the mis-sourced 182 value); fall back to the resolved
+	// insert tag only if an existing profile somehow carries a blank gamertag.
+	memberGT := profile.Gamertag
+	if memberGT == "" {
+		memberGT = insertGT
 	}
 
 	member := SquadMemberRecord{
 		XUID:       xuid,
 		UserID:     profile.UserID,
-		Gamertag:   gamertag,
+		Gamertag:   memberGT,
 		Name:       name,
 		Leader:     false,
 		UserNumber: firstFreeUserNumber(sq.Members),
@@ -528,7 +564,7 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 	// Log a "joined the squad" history event (type 2). Only on a genuine new-member push -- an idempotent
 	// re-commit of an existing member returns above and records nothing. Best-effort: the join itself has
 	// already succeeded and must return its status regardless of the history write.
-	_ = r.RecordSquadJoined(ctx, teamID, historyName(name, gamertag), time.Now())
+	_ = r.RecordSquadJoined(ctx, teamID, historyName(name, memberGT), time.Now())
 	return '1', profile.UserID, nil
 }
 
