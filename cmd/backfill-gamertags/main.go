@@ -53,7 +53,10 @@ func main() {
 	logging.Info.Printf("[BACKFILL] %s — %d authoritative gamertags from webservices players", mode, report.PlayersScanned)
 	printSection("PROFILE gamertag fixes", report.ProfileFixes)
 	printSection("ROSTER gamertag fixes", report.RosterFixes)
-	if len(report.ProfileFixes)+len(report.RosterFixes) == 0 {
+	printSection("CLOBBER-SIGNATURE roster fixes (dup tag in roster -> join name)", report.ClobberRosterFixes)
+	printSection("CLOBBER-SIGNATURE profile fixes", report.ClobberProfileFixes)
+	total := len(report.ProfileFixes) + len(report.RosterFixes) + len(report.ClobberRosterFixes) + len(report.ClobberProfileFixes)
+	if total == 0 {
 		logging.Info.Printf("[BACKFILL] nothing to correct (all gamertags already match, or no login records)")
 	} else if !report.Applied {
 		logging.Info.Printf("[BACKFILL] dry run only — re-run with -apply to execute")

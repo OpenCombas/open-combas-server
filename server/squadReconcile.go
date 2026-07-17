@@ -29,8 +29,10 @@ type squadMembership struct {
 //	keep    - the squad the player stays in
 //	pull    - remove the player (a non-leader) from this squad
 //	disband - delete this squad (the player is its SOLE member/leader -> an orphaned solo squad)
-//	flag    - the player LEADS this squad and it has other members: NOT auto-touched (removing a leader
-//	          would orphan the followers) -> reported for a manual leader-reassignment decision
+//	flag    - the player LEADS this squad and it has other members, yet it is not the keep: NOT
+//	          auto-touched (removing a leader would orphan the followers). Since a led-with-followers
+//	          squad wins the keep choice, this only remains for a player leading SEVERAL such squads
+//	          -> reported for a manual leader-reassignment decision on the extras
 type memberDisposition struct {
 	TeamID string
 	Kind   string
@@ -43,12 +45,16 @@ type playerPlan struct {
 }
 
 // chooseKeepSquad picks the squad a multi-squad player should remain in:
-//  1. profileTeam, if the player is actually a member of it (the app's own "current squad" pointer);
-//  2. else the single squad they LEAD, if exactly one;
-//  3. else the most-recent squad (highest teamId; ids are zero-padded, so lexical order == chronological).
+//  1. a squad they LEAD that has followers — "leader with followers wins" (operator policy 2026-07-17):
+//     the leader can't be pulled without orphaning the followers, so leadership outranks the profile
+//     pointer. If they lead several such squads, the profile pointer breaks the tie when it is one of
+//     them, else the most recent wins; the rest still get flagged (a followed leader is never pulled).
+//  2. else profileTeam, if the player is actually a member of it (the app's own "current squad" pointer);
+//  3. else the single squad they LEAD, if exactly one (necessarily solo-led, given rule 1);
+//  4. else the most-recent squad (highest teamId; ids are zero-padded, so lexical order == chronological).
 func chooseKeepSquad(ms []squadMembership, profileTeam string) string {
 	inProfile := false
-	var leaderTeams []string
+	var leaderTeams, ledWithFollowers []string
 	maxTeam := ""
 	for _, m := range ms {
 		if m.TeamID == profileTeam {
@@ -56,10 +62,25 @@ func chooseKeepSquad(ms []squadMembership, profileTeam string) string {
 		}
 		if m.Leader {
 			leaderTeams = append(leaderTeams, m.TeamID)
+			if m.Size > 1 {
+				ledWithFollowers = append(ledWithFollowers, m.TeamID)
+			}
 		}
 		if m.TeamID > maxTeam {
 			maxTeam = m.TeamID
 		}
+	}
+	if len(ledWithFollowers) > 0 {
+		best := ""
+		for _, t := range ledWithFollowers {
+			if t == profileTeam {
+				return t
+			}
+			if t > best {
+				best = t
+			}
+		}
+		return best
 	}
 	if inProfile {
 		return profileTeam
