@@ -109,6 +109,51 @@ func TestPvPAndFierce(t *testing.T) {
 	}
 }
 
+// TestScaleForCPU covers the PvE point-scaling: a real squad's win over a CPU (non-TM) opponent has its
+// occupation + renown multiplied by the configured factor, while PvP, losses to a CPU, and scale==1 pass
+// through untouched. Synthetic team ids only (open-source house rule).
+func TestScaleForCPU(t *testing.T) {
+	const (
+		real1 = "TM0001000000000001"
+		real2 = "TM0001000000000002"
+		cpu   = "BB9999999999999999"
+	)
+	pve := BattleResult{WinnerTeam: real1, LoserTeam: cpu, OccDelta: 20, WinnerMerit: 28}
+
+	// Halving a PvE win scales both point values (28*0.5=14 rounds to nearest).
+	if got := scaleForCPU(pve, 0.5); got.OccDelta != 10 || got.WinnerMerit != 14 {
+		t.Errorf("PvE scale 0.5 = occ %d/merit %d, want 10/14", got.OccDelta, got.WinnerMerit)
+	}
+	// Doubling to reward PvE.
+	if got := scaleForCPU(pve, 2.0); got.OccDelta != 40 || got.WinnerMerit != 56 {
+		t.Errorf("PvE scale 2.0 = occ %d/merit %d, want 40/56", got.OccDelta, got.WinnerMerit)
+	}
+	// scale==1 is an explicit no-op.
+	if got := scaleForCPU(pve, 1); got.OccDelta != 20 || got.WinnerMerit != 28 {
+		t.Errorf("scale 1 must not change a PvE win, got occ %d/merit %d", got.OccDelta, got.WinnerMerit)
+	}
+	// A PvP win is never scaled, even with a factor set.
+	pvp := BattleResult{WinnerTeam: real1, LoserTeam: real2, OccDelta: 20, WinnerMerit: 28}
+	if got := scaleForCPU(pvp, 0.5); got.OccDelta != 20 || got.WinnerMerit != 28 {
+		t.Errorf("PvP must not scale, got occ %d/merit %d", got.OccDelta, got.WinnerMerit)
+	}
+	// A real squad LOSING to a CPU (winner is the CPU) earns nothing to scale -> unchanged.
+	cpuWin := BattleResult{WinnerTeam: cpu, LoserTeam: real1, OccDelta: 20, WinnerMerit: 28}
+	if got := scaleForCPU(cpuWin, 0.5); got.OccDelta != 20 || got.WinnerMerit != 28 {
+		t.Errorf("CPU winner must not scale, got occ %d/merit %d", got.OccDelta, got.WinnerMerit)
+	}
+	// An empty loser id is not treated as a CPU (guards malformed reports).
+	empty := BattleResult{WinnerTeam: real1, LoserTeam: "", OccDelta: 20, WinnerMerit: 28}
+	if got := scaleForCPU(empty, 0.5); got.OccDelta != 20 || got.WinnerMerit != 28 {
+		t.Errorf("empty loser must not scale, got occ %d/merit %d", got.OccDelta, got.WinnerMerit)
+	}
+
+	// scalePoints rounding + clamps.
+	if scalePoints(28, 0.5) != 14 || scalePoints(3, 0.5) != 2 || scalePoints(0, 0.5) != 0 || scalePoints(-5, 0.5) != -5 {
+		t.Error("scalePoints rounding/passthrough wrong (want 14, 2, 0, -5)")
+	}
+}
+
 // TestLeadAfterDelta covers the capture trigger: a battlefield changes hands only when a mission's
 // occupation shift makes the attacker overtake the holder -- a single mission never flips a full one.
 func TestLeadAfterDelta(t *testing.T) {

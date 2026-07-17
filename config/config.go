@@ -54,6 +54,12 @@ type StatusServerConfig struct {
 type EventServerConfig struct {
 	ServerConfig
 	GenerateEvents bool
+	// CpuBattleScale multiplies the occupation + renown a real squad earns from a mission against a
+	// CPU/AI squad (a non-"TM" opponent), letting an operator tune PvE relative to real PvP -- e.g. 0.5
+	// to halve PvE farming, or 2.0 to reward it. It scales BOTH the war-map occupation move and the squad
+	// ledger credit together, so every consumer agrees. Only BattleReport reads it. Unset or <= 0 means
+	// 1.0 (no scaling) -- so an absent TOML value keeps the current behavior rather than zeroing rewards.
+	CpuBattleScale float64
 }
 
 type LoggingConfig struct {
@@ -212,6 +218,30 @@ func generateDefaultConfig() Config {
 				Port:    1266,
 				Enabled: true,
 				Type:    WorldDonation,
+			},
+		},
+		// World-event servers. These MUST live here (not in Servers) so GenerateEvents/CpuBattleScale
+		// decode and main.go's EventServers loop dispatches them. GenerateEvents enables data-driven
+		// news/capture events; CpuBattleScale (BattleReport only) scales occ+renown earned vs a CPU
+		// opponent (1.0 = no scaling).
+		EventServers: []EventServerConfig{
+			{
+				ServerConfig:   ServerConfig{Label: "BATTLE_REPORT_DEBUG", Port: 1214, Enabled: true, Type: BattleReport},
+				GenerateEvents: true,
+				CpuBattleScale: 1.0,
+			},
+			{
+				ServerConfig:   ServerConfig{Label: "BATTLE_REPORT", Port: 1254, Enabled: true, Type: BattleReport},
+				GenerateEvents: true,
+				CpuBattleScale: 1.0,
+			},
+			{
+				ServerConfig:   ServerConfig{Label: "WORLD_NEWS_DEBUG", Port: 1212, Enabled: true, Type: WorldNews},
+				GenerateEvents: true,
+			},
+			{
+				ServerConfig:   ServerConfig{Label: "WORLD_NEWS", Port: 1252, Enabled: true, Type: WorldNews},
+				GenerateEvents: true,
 			},
 		},
 		StaticMessageServers: []StaticMessageServerConfig{

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"ChromehoundsStatusServer/logging"
@@ -16,19 +17,29 @@ type BattleApplier struct {
 	worldRepo      *WorldRepository
 	squadRepo      *SquadRepository
 	generateEvents bool
-	label          string // log prefix
+	cpuBattleScale float64 // PvE (CPU-opponent) occ+renown multiplier; always normalized to > 0
+	label          string  // log prefix
 }
 
 // NewBattleApplier builds an applier. Either repo may be nil (that stage is then skipped); label is the
 // log prefix (the owning server's config Label for the live path, the tool name for the CLI).
-func NewBattleApplier(worldRepo *WorldRepository, squadRepo *SquadRepository, generateEvents bool, label string) *BattleApplier {
-	return &BattleApplier{worldRepo: worldRepo, squadRepo: squadRepo, generateEvents: generateEvents, label: label}
+// cpuBattleScale multiplies the occupation + renown from a mission against a CPU squad; a value <= 0 is
+// treated as 1.0 (no scaling) so an unset config never zeroes out rewards.
+func NewBattleApplier(worldRepo *WorldRepository, squadRepo *SquadRepository, generateEvents bool, cpuBattleScale float64, label string) *BattleApplier {
+	if cpuBattleScale <= 0 {
+		cpuBattleScale = 1
+	}
+	return &BattleApplier{worldRepo: worldRepo, squadRepo: squadRepo, generateEvents: generateEvents, cpuBattleScale: cpuBattleScale, label: label}
 }
 
 // Apply processes one battle result exactly as the live battle-report server does: it applies the world
 // mutation (unless the fought battlefield is locked, in which case the report is ignored) and credits
 // squad renown. Safe to call outside the network server.
 func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
+	// A mission against a CPU/AI opponent is PvE: scale the winner's occupation + renown before res fans
+	// out, so the war map, the squad ledger, and the summary log all agree.
+	res = scaleForCPU(res, s.cpuBattleScale)
+
 	if s.worldRepo != nil {
 		bf, err := s.worldRepo.BattlefieldByAreaMap(ctx, res.AreaID, res.MapID)
 		switch {
@@ -247,6 +258,32 @@ func (s *BattleApplier) recordRevival(ctx context.Context, res BattleResult, nat
 // distinct. A battle against an AI/CPU side (a non-TM id) is PvE. Drives the area fierce-battle share.
 func isPvP(res BattleResult) bool {
 	return isRealTeam(res.WinnerTeam) && isRealTeam(res.LoserTeam) && res.WinnerTeam != res.LoserTeam
+}
+
+// scaleForCPU returns res with its winner occupation + renown multiplied by scale when the report is a
+// real squad's win over a CPU/AI squad (a non-"TM", non-empty loser) -- the only case that earns points
+// worth tuning. PvP, a real squad losing to a CPU (winner not real), and scale==1 all pass through
+// unchanged, so PvP rewards and defeats are never altered.
+func scaleForCPU(res BattleResult, scale float64) BattleResult {
+	if scale == 1 || !isRealTeam(res.WinnerTeam) || res.LoserTeam == "" || isRealTeam(res.LoserTeam) {
+		return res
+	}
+	res.OccDelta = scalePoints(res.OccDelta, scale)
+	res.WinnerMerit = scalePoints(res.WinnerMerit, scale)
+	return res
+}
+
+// scalePoints multiplies a non-negative point value (occupation or renown) by factor, rounding to the
+// nearest int32 and clamping at 0. A zero/negative input is returned unchanged (nothing to scale).
+func scalePoints(v int32, factor float64) int32 {
+	if v <= 0 {
+		return v
+	}
+	scaled := math.Round(float64(v) * factor)
+	if scaled < 0 {
+		return 0
+	}
+	return int32(scaled)
 }
 
 // squadDisplayName resolves a wire team id (e.g. "TM0001000000000042", read from the battle report at

@@ -243,7 +243,7 @@ func RecordRegionCaptureEvent(ctx context.Context, repo *WorldRepository, areaID
 }
 
 func NewBattleReportServer(listenAddress net.IP, serverConfig config.EventServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, squadRepo *SquadRepository, worldRepo *WorldRepository) *battleReportServer {
-	s := &battleReportServer{applier: NewBattleApplier(worldRepo, squadRepo, serverConfig.GenerateEvents, serverConfig.Label)}
+	s := &battleReportServer{applier: NewBattleApplier(worldRepo, squadRepo, serverConfig.GenerateEvents, serverConfig.CpuBattleScale, serverConfig.Label)}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,

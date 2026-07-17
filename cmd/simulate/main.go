@@ -59,6 +59,7 @@ func main() {
 	loserTeam := flag.String("loser-squad", defaultLoserTeam, "loser's team id")
 	occ := flag.Int("occ", 100, "occupation/capture points credited to the winner")
 	merit := flag.Int("merit", 100, "winner renown/merit")
+	cpuScale := flag.Float64("cpu-scale", 1.0, "occ+renown multiplier for a real squad's win over a CPU (non-TM) squad; <=0 means 1.0")
 	scenario := flag.String("scenario", "", "path to a scenario file (one battle per line); overrides the single-battle flags")
 	flag.Parse()
 
@@ -83,7 +84,7 @@ func main() {
 	world := server.NewWorldRepository(store)
 	squad := server.NewSquadRepository(store)
 	// generateEvents=true so the tool exercises the full event/dissolution path; label "SIM".
-	s := &sim{world: world, applier: server.NewBattleApplier(world, squad, true, "SIM")}
+	s := &sim{world: world, applier: server.NewBattleApplier(world, squad, true, *cpuScale, "SIM")}
 
 	if *scenario != "" {
 		s.runScenario(ctx, *scenario)
