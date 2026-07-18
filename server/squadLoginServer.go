@@ -88,7 +88,13 @@ type SquadTeamInfo struct {
 	RoleFlags   byte     // off 81 - parser "Recruit Type"; = role bitmask (config setting)
 	_           [2]byte  // off 82 - pad (end of C20)
 	_           int32    // off 84
-	_           int32    // off 88 (end of I2)
+	// off 88 - TEAM-INFO FRESHNESS COUNTER. The client's team-info ingest (Release.xex sub_823C0ED8) reads
+	// this and accepts + REBROADCASTS the roster to peers (P2P msg 0x7001) only when it EXCEEDS the value it
+	// cached from the previous fetch ("VALID"); otherwise it logs "It is OLD" and discards. Left unset (0)
+	// the client judged every fetch stale and never propagated the roster -- a likely cause of the squad
+	// roster never reaching the P2P session. Set below to the member count so a join (count rises) makes the
+	// fetch VALID. (Follow-up: a monotonic per-squad update-seq would also cover leaves/config changes.)
+	TeamInfoCount int32 // off 88 (end of I2)
 }
 
 // SquadData is the full 1248-byte squad-login body.
@@ -170,6 +176,7 @@ func CreateSquadLoginState(hi UserHelloMessage, packet []byte) SquadLoginState {
 	copy(t.TeamName[:], "OpenCombas")
 	t.CountryCode = 'B'
 	t.MemberCount = 1
+	t.TeamInfoCount = 1 // freshness counter (see field comment): > client's cached 0 -> "VALID" -> rebroadcast
 	t.TeamRank = 1
 	t.Language = 'J'
 	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
@@ -238,6 +245,10 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 		n = len(state.Data.Members) // wire holds 20 members
 	}
 	t.MemberCount = byte(n)
+	// Freshness counter the client compares against its cached value to decide whether to accept + peer-
+	// rebroadcast this roster (see the TeamInfoCount field comment). Member count rises on a join, so the
+	// joiner's/leader's fetch reads > their cached 0/prior -> "VALID" -> roster propagates to the P2P session.
+	t.TeamInfoCount = int32(n)
 	for i := 0; i < n; i++ {
 		rec := squad.Members[i]
 		m := &state.Data.Members[i]
