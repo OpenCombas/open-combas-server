@@ -11,9 +11,20 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// teamInfoSeq is a process-wide MONOTONIC counter serialized into each login response's TeamInfoCount
+// (team-header off 88). The client (Release.xex sub_823C0ED8) keeps a high-water mark of the last count it
+// saw and only accepts + peer-rebroadcasts a roster whose count EXCEEDS it. So the count MUST strictly
+// increase on every response, or a reconnect with an unchanged roster reads as "OLD" and never re-propagates
+// its identity (observed: member count fluctuates 2->1->2 and the high-water mark pins it -> reconnect
+// stalls -> lose XBL). Seeded from the wall clock so it also outruns any value a client cached before a
+// server restart; bumped once per response.
+var teamInfoSeq = int32(time.Now().Unix())
 
 // Squad login / squad-data fetch response.
 //
@@ -176,7 +187,7 @@ func CreateSquadLoginState(hi UserHelloMessage, packet []byte) SquadLoginState {
 	copy(t.TeamName[:], "OpenCombas")
 	t.CountryCode = 'B'
 	t.MemberCount = 1
-	t.TeamInfoCount = 1 // freshness counter (see field comment): > client's cached 0 -> "VALID" -> rebroadcast
+	t.TeamInfoCount = atomic.AddInt32(&teamInfoSeq, 1) // monotonic per-response (see teamInfoSeq) -> always VALID
 	t.TeamRank = 1
 	t.Language = 'J'
 	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
@@ -245,10 +256,11 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 		n = len(state.Data.Members) // wire holds 20 members
 	}
 	t.MemberCount = byte(n)
-	// Freshness counter the client compares against its cached value to decide whether to accept + peer-
-	// rebroadcast this roster (see the TeamInfoCount field comment). Member count rises on a join, so the
-	// joiner's/leader's fetch reads > their cached 0/prior -> "VALID" -> roster propagates to the P2P session.
-	t.TeamInfoCount = int32(n)
+	// MONOTONIC per-response counter (NOT the member count -- that fluctuates and the client's high-water
+	// mark pins it, so a reconnect reads "OLD" and never re-propagates). A strictly-increasing value makes
+	// EVERY fetch, including the applicant->member reconnect, "VALID" -> the client re-accepts + rebroadcasts
+	// the roster (msg 0x7001) so its identity reaches peers.
+	t.TeamInfoCount = atomic.AddInt32(&teamInfoSeq, 1)
 	for i := 0; i < n; i++ {
 		rec := squad.Members[i]
 		m := &state.Data.Members[i]
