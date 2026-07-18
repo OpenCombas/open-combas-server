@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,15 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// squadlessSelfTeam (EXPERIMENT, default ON; set SQUADLESS_SELF_TEAM=0 to revert to the old "no team"
+// reply): when a player has no squad, reply with a valid one-member team whose sole member is the caller
+// (UserID = the caller's own US). Rationale: with the old "no team" (Status=1) reply the client's team-data
+// self-match (Release.xex sub_823BB678) can't find itself in an empty roster and throws "Incorrect team
+// data. Clear team data and rewrite to storage." the moment a player leaves a squad -- wiping its identity.
+// A self-team ("team of one") lets the self-match succeed on the caller's own US, so a squadless player
+// keeps a stable identity across leaves + the applicant->member transition. Toggleable so we can A/B it.
+var squadlessSelfTeam = os.Getenv("SQUADLESS_SELF_TEAM") != "0"
 
 // teamInfoSeq is a process-wide MONOTONIC counter serialized into each login response's TeamInfoCount
 // (team-header off 88). The client (Release.xex sub_823C0ED8) keeps a high-water mark of the last count it
@@ -299,6 +309,41 @@ func noTeamLoginState(hi UserHelloMessage) SquadLoginState {
 	return state
 }
 
+// selfTeamLoginState builds a valid ONE-MEMBER team whose sole member IS the caller, so a squadless
+// player's client self-match (sub_823BB678) finds itself (on its own US) instead of failing and clearing
+// its identity. The caller's US is resolved (minted if new) from combasProfiles by the login-header xuid.
+// Falls back to "no team" if the profile can't be resolved so login never breaks. See squadlessSelfTeam.
+func (s *squadLoginServer) selfTeamLoginState(ctx context.Context, hi UserHelloMessage, gamertag string) SquadLoginState {
+	profile, err := s.repo.EnsureProfile(ctx, string(hi.Xuid[:]), gamertag)
+	if err != nil || profile.UserID == "" {
+		logging.Warn.Printf("[%s] self-team profile resolve failed, using no-team: %v", s.serverConfig.Label, err)
+		return noTeamLoginState(hi)
+	}
+	name := gamertag
+	if name == "" {
+		name = "Solo"
+	}
+	state := SquadLoginState{Header: CreateHeader(hi.Xuid, hi.Order)}
+	t := &state.Data.Team
+	t.Status = 0 // valid team so the client keeps (not clears) its record
+	copy(t.TeamName[:], name)
+	t.CountryCode = 'A'
+	t.MemberCount = 1
+	t.TeamInfoCount = atomic.AddInt32(&teamInfoSeq, 1) // monotonic freshness (see teamInfoSeq)
+	t.TeamRank = 1
+	t.Language = 'J'
+	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
+
+	m := &state.Data.Members[0]
+	m.XUID = xuidToInt64(hi.Xuid)     // the caller's own binary xuid
+	copy(m.UserID[:], profile.UserID) // the caller's own US -> the self-match matches THIS entry
+	copy(m.UserName[:], name)
+	m.LeaderFlg = 1 // solo leader of the team-of-one
+	m.UserNumber = 1
+	m.Rank = [3]byte{0x00, 0x00, 0x01}
+	return state
+}
+
 type squadLoginServer struct {
 	*messageServer
 	repo *SquadRepository // nil when Mongo is disabled -> static squad record
@@ -322,6 +367,11 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 	s.repo.RefreshGamertag(readCtx, string(hi.Xuid[:]), gamertag)
 
 	if teamIDIsEmpty(teamID) {
+		// Squadless (incl. the moment a player leaves): a self-team keeps the client from clearing its
+		// identity; the old "no team" reply is the SQUADLESS_SELF_TEAM=0 path.
+		if squadlessSelfTeam {
+			return s.selfTeamLoginState(readCtx, hi, gamertag)
+		}
 		return noTeamLoginState(hi)
 	}
 	squad, err := s.repo.SquadByTeamID(readCtx, teamID)
@@ -330,9 +380,12 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 		return CreateSquadLoginState(hi, packet)
 	}
 	if squad == nil {
-		// Client holds a team id we don't know (e.g. a save from before the DB existed); report no team
-		// so it reconciles rather than serving a stale fabricated squad.
-		logging.Warn.Printf("[%s] unknown team id %q -> no team", s.serverConfig.Label, teamID)
+		// Client holds a team id we don't know (e.g. a save from before the DB existed): treat as squadless
+		// (self-team) so it keeps a valid solo identity rather than clearing, instead of a bare "no team".
+		logging.Warn.Printf("[%s] unknown team id %q -> squadless self-team", s.serverConfig.Label, teamID)
+		if squadlessSelfTeam {
+			return s.selfTeamLoginState(readCtx, hi, gamertag)
+		}
 		return noTeamLoginState(hi)
 	}
 	return squadLoginStateFromSquad(hi, squad)
