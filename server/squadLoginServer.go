@@ -334,11 +334,14 @@ func (s *squadLoginServer) selfTeamLoginState(ctx context.Context, hi UserHelloM
 	t.Language = 'J'
 	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
 
+	_ = profile // profile ensured (mints the player's US for later), but not surfaced in this variant
 	m := &state.Data.Members[0]
-	m.XUID = xuidToInt64(hi.Xuid)     // the caller's own binary xuid
-	copy(m.UserID[:], profile.UserID) // the caller's own US -> the self-match matches THIS entry
+	m.XUID = xuidToInt64(hi.Xuid) // the caller's binary id occupies the member slot ("TM id" set)
+	// EXPERIMENT variant (operator, 2026-07-18): leave UserID (US) ZEROED and DON'T mark the caller as
+	// leader. The prior variant (US populated + LeaderFlg=1) made the client render the caller as the sole
+	// rostered leader -> "booted themself from a squad". Here the member carries only its id, no US/leader,
+	// so the record is a valid team without presenting a populated solo roster.
 	copy(m.UserName[:], name)
-	m.LeaderFlg = 1 // solo leader of the team-of-one
 	m.UserNumber = 1
 	m.Rank = [3]byte{0x00, 0x00, 0x01}
 	return state
