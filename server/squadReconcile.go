@@ -152,7 +152,7 @@ func (r *SquadRepository) leaveOtherSquads(ctx context.Context, xuid, keepTeamID
 			// only happens on anomalous state -> leave it for `cmd/reconcile-squads` to surface.
 			logging.Warn.Printf("[squad] %s created/joined %s but still leads %s (has followers); not auto-removed — run reconcile-squads", xuid, keepTeamID, sq.TeamID)
 		default:
-			if _, err := r.squads.UpdateOne(ctx, bson.M{"teamId": sq.TeamID}, bson.M{"$pull": bson.M{"members": bson.M{"xuid": xuid}}}); err != nil {
+			if _, err := r.squads.UpdateOne(ctx, bson.M{"teamId": sq.TeamID}, bson.M{"$pull": bson.M{"members": bson.M{"xuid": xuid}}, "$inc": bumpSeq}); err != nil {
 				logging.Warn.Printf("[squad] leaveOtherSquads pull %s from %s failed: %v", xuid, sq.TeamID, err)
 			}
 		}
@@ -179,7 +179,7 @@ func (r *SquadRepository) RefreshGamertag(ctx context.Context, xuid, gamertag st
 	// $elemMatch so the positional $ targets the caller's own roster entry (and only when it differs).
 	if _, err := r.squads.UpdateOne(ctx,
 		bson.M{"members": bson.M{"$elemMatch": bson.M{"xuid": xuid, "gamertag": bson.M{"$ne": gamertag}}}},
-		bson.M{"$set": bson.M{"members.$.gamertag": gamertag}},
+		bson.M{"$set": bson.M{"members.$.gamertag": gamertag}, "$inc": bumpSeq},
 	); err != nil {
 		logging.Warn.Printf("[squad] RefreshGamertag member %s failed: %v", xuid, err)
 	}
@@ -251,7 +251,7 @@ func (r *SquadRepository) ReconcileSquads(ctx context.Context, apply bool) (*Rec
 			case "pull":
 				report.Pulls = append(report.Pulls, fmt.Sprintf("%s pulled from %s", xuid, d.TeamID))
 				if apply {
-					if _, err := r.squads.UpdateOne(ctx, bson.M{"teamId": d.TeamID}, bson.M{"$pull": bson.M{"members": bson.M{"xuid": xuid}}}); err != nil {
+					if _, err := r.squads.UpdateOne(ctx, bson.M{"teamId": d.TeamID}, bson.M{"$pull": bson.M{"members": bson.M{"xuid": xuid}}, "$inc": bumpSeq}); err != nil {
 						return nil, err
 					}
 				}

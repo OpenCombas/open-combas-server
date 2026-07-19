@@ -125,7 +125,7 @@ func (r *SquadRepository) BackfillGamertags(ctx context.Context, players *mongo.
 			if apply {
 				if _, err := r.squads.UpdateOne(ctx,
 					bson.M{"teamId": sq.TeamID, "members.xuid": m.XUID},
-					bson.M{"$set": bson.M{"members.$.gamertag": gt}},
+					bson.M{"$set": bson.M{"members.$.gamertag": gt}, "$inc": bumpSeq},
 				); err != nil {
 					return nil, err
 				}
@@ -147,7 +147,7 @@ func (r *SquadRepository) BackfillGamertags(ctx context.Context, players *mongo.
 			if apply {
 				if _, err := r.squads.UpdateOne(ctx,
 					bson.M{"teamId": fix.TeamID, "members.xuid": fix.XUID},
-					bson.M{"$set": bson.M{"members.$.gamertag": fix.New}},
+					bson.M{"$set": bson.M{"members.$.gamertag": fix.New}, "$inc": bumpSeq},
 				); err != nil {
 					return nil, err
 				}

@@ -88,7 +88,16 @@ type Squad struct {
 	Members  []SquadMemberRecord `bson:"members"`
 	Settings *SquadSettings      `bson:"settings,omitempty"`
 	Emblems  []byte              `bson:"emblems,omitempty"` // 16 emblem layers (192 bytes, wire "S4,C3" format)
+	// UpdateSeq is a per-squad monotonic serial bumped on every roster/config mutation (bumpSeq). It is
+	// serialized into the login response's TeamInfoCount (team-header off 88): the client re-accepts +
+	// peer-rebroadcasts the roster only when this exceeds the value it cached, so a genuine change is
+	// "VALID" (propagated) while a stable re-login is "OLD" (not re-processed). Starts at 1 on create.
+	UpdateSeq int32 `bson:"updateSeq"`
 }
+
+// bumpSeq is the $inc payload every squad mutation adds so UpdateSeq advances on any roster/config change
+// (member add/remove, settings, member number, emblem, gamertag). Login serves UpdateSeq as TeamInfoCount.
+var bumpSeq = bson.M{"updateSeq": 1}
 
 // UpdateSquadSettings applies an uploaded config to a squad, honouring the section flags: bit0 sets the
 // main settings (stance/activity/language/regions/roles), bit1 sets colours/passcode. Only the present
@@ -112,7 +121,7 @@ func (r *SquadRepository) UpdateSquadSettings(ctx context.Context, teamID string
 		n, err := r.squads.CountDocuments(ctx, bson.M{"teamId": teamID})
 		return n > 0, err
 	}
-	res, err := r.squads.UpdateOne(ctx, bson.M{"teamId": teamID}, bson.M{"$set": set})
+	res, err := r.squads.UpdateOne(ctx, bson.M{"teamId": teamID}, bson.M{"$set": set, "$inc": bumpSeq})
 	if err != nil {
 		return false, err
 	}
@@ -417,7 +426,7 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, xuid, userID
 	} else {
 		if _, err := r.squads.UpdateOne(ctx,
 			bson.M{"teamId": teamID},
-			bson.M{"$pull": bson.M{"members": bson.M{"userId": memberUserID}}},
+			bson.M{"$pull": bson.M{"members": bson.M{"userId": memberUserID}}, "$inc": bumpSeq},
 		); err != nil {
 			return 0, err
 		}
@@ -535,7 +544,7 @@ func (r *SquadRepository) AddMember(ctx context.Context, teamID, xuid, gamertag,
 	// (the host may re-fire 182 during a retry storm) cannot create a duplicate roster entry.
 	res, err := r.squads.UpdateOne(ctx,
 		bson.M{"teamId": teamID, "members.xuid": bson.M{"$ne": xuid}},
-		bson.M{"$push": bson.M{"members": member}},
+		bson.M{"$push": bson.M{"members": member}, "$inc": bumpSeq},
 	)
 	if err != nil {
 		return 0, "", err
@@ -615,7 +624,7 @@ func (r *SquadRepository) SetMemberNumber(ctx context.Context, teamID, xuid, use
 	// Update by the matched member's STORED User ID -- never the passed-in userID, which may be the wrong US.
 	if _, err := r.squads.UpdateOne(ctx,
 		bson.M{"teamId": teamID, "members.userId": sq.Members[idx].UserID},
-		bson.M{"$set": bson.M{"members.$.userNumber": int32(number)}},
+		bson.M{"$set": bson.M{"members.$.userNumber": int32(number)}, "$inc": bumpSeq},
 	); err != nil {
 		return 0, err
 	}
@@ -626,7 +635,7 @@ func (r *SquadRepository) SetMemberNumber(ctx context.Context, teamID, xuid, use
 func (r *SquadRepository) SetEmblems(ctx context.Context, teamID string, emblems []byte) (bool, error) {
 	res, err := r.squads.UpdateOne(ctx,
 		bson.M{"teamId": teamID},
-		bson.M{"$set": bson.M{"emblems": emblems}},
+		bson.M{"$set": bson.M{"emblems": emblems}, "$inc": bumpSeq},
 	)
 	if err != nil {
 		return false, err
@@ -676,6 +685,7 @@ func (r *SquadRepository) CreateSquad(ctx context.Context, name, faction string,
 			UserNumber: 1,
 			Rank:       1,
 		}},
+		UpdateSeq: 1, // first serial; the leader's first login reads count 1 > cached 0 -> VALID
 	}
 	if _, err := r.squads.InsertOne(ctx, squad); err != nil {
 		return nil, err

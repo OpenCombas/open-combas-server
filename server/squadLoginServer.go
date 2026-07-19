@@ -8,33 +8,12 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
-
-// squadlessSelfTeam (EXPERIMENT, default ON; set SQUADLESS_SELF_TEAM=0 to revert to the old "no team"
-// reply): when a player has no squad, reply with a valid one-member team whose sole member is the caller
-// (UserID = the caller's own US). Rationale: with the old "no team" (Status=1) reply the client's team-data
-// self-match (Release.xex sub_823BB678) can't find itself in an empty roster and throws "Incorrect team
-// data. Clear team data and rewrite to storage." the moment a player leaves a squad -- wiping its identity.
-// A self-team ("team of one") lets the self-match succeed on the caller's own US, so a squadless player
-// keeps a stable identity across leaves + the applicant->member transition. Toggleable so we can A/B it.
-var squadlessSelfTeam = os.Getenv("SQUADLESS_SELF_TEAM") != "0"
-
-// teamInfoSeq is a process-wide MONOTONIC counter serialized into each login response's TeamInfoCount
-// (team-header off 88). The client (Release.xex sub_823C0ED8) keeps a high-water mark of the last count it
-// saw and only accepts + peer-rebroadcasts a roster whose count EXCEEDS it. So the count MUST strictly
-// increase on every response, or a reconnect with an unchanged roster reads as "OLD" and never re-propagates
-// its identity (observed: member count fluctuates 2->1->2 and the high-water mark pins it -> reconnect
-// stalls -> lose XBL). Seeded from the wall clock so it also outruns any value a client cached before a
-// server restart; bumped once per response.
-var teamInfoSeq = int32(time.Now().Unix())
 
 // Squad login / squad-data fetch response.
 //
@@ -109,12 +88,12 @@ type SquadTeamInfo struct {
 	RoleFlags   byte     // off 81 - parser "Recruit Type"; = role bitmask (config setting)
 	_           [2]byte  // off 82 - pad (end of C20)
 	_           int32    // off 84
-	// off 88 - TEAM-INFO FRESHNESS COUNTER. The client's team-info ingest (Release.xex sub_823C0ED8) reads
-	// this and accepts + REBROADCASTS the roster to peers (P2P msg 0x7001) only when it EXCEEDS the value it
-	// cached from the previous fetch ("VALID"); otherwise it logs "It is OLD" and discards. Left unset (0)
-	// the client judged every fetch stale and never propagated the roster -- a likely cause of the squad
-	// roster never reaching the P2P session. Set below to the member count so a join (count rises) makes the
-	// fetch VALID. (Follow-up: a monotonic per-squad update-seq would also cover leaves/config changes.)
+	// off 88 - TEAM-INFO UPDATE SERIAL. The client's team-info ingest (Release.xex sub_823C0ED8) accepts +
+	// REBROADCASTS the roster to peers (P2P msg 0x7001) only when this EXCEEDS the value it cached ("VALID");
+	// otherwise "OLD" and discarded. Fed from Squad.UpdateSeq (bumped on real squad mutations), so a genuine
+	// change propagates while a stable re-login is "OLD" and not re-processed. (Left 0 = never VALID; an
+	// always-increasing value = always VALID, which force-processed every login into the client's team-data
+	// validation and threw "Incorrect team data" for non-active/squadless consoles -- hence the per-squad serial.)
 	TeamInfoCount int32 // off 88 (end of I2)
 }
 
@@ -197,7 +176,7 @@ func CreateSquadLoginState(hi UserHelloMessage, packet []byte) SquadLoginState {
 	copy(t.TeamName[:], "OpenCombas")
 	t.CountryCode = 'B'
 	t.MemberCount = 1
-	t.TeamInfoCount = atomic.AddInt32(&teamInfoSeq, 1) // monotonic per-response (see teamInfoSeq) -> always VALID
+	t.TeamInfoCount = 1 // static record: fixed serial (no persistence to bump)
 	t.TeamRank = 1
 	t.Language = 'J'
 	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
@@ -266,11 +245,12 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 		n = len(state.Data.Members) // wire holds 20 members
 	}
 	t.MemberCount = byte(n)
-	// MONOTONIC per-response counter (NOT the member count -- that fluctuates and the client's high-water
-	// mark pins it, so a reconnect reads "OLD" and never re-propagates). A strictly-increasing value makes
-	// EVERY fetch, including the applicant->member reconnect, "VALID" -> the client re-accepts + rebroadcasts
-	// the roster (msg 0x7001) so its identity reaches peers.
-	t.TeamInfoCount = atomic.AddInt32(&teamInfoSeq, 1)
+	// Per-SQUAD update serial (bumped only on real squad mutations; see Squad.UpdateSeq). The client
+	// (Release.xex sub_823C0ED8) accepts + peer-rebroadcasts the roster only when this EXCEEDS the value it
+	// cached, so a genuine change (join/leave/config) reads "VALID" and propagates, while a stable re-login
+	// reads the same serial -> "OLD" and is NOT re-processed (which is what stopped the client force-running
+	// its team-data validation on every login and throwing "Incorrect team data").
+	t.TeamInfoCount = squad.UpdateSeq
 	for i := 0; i < n; i++ {
 		rec := squad.Members[i]
 		m := &state.Data.Members[i]
@@ -309,44 +289,6 @@ func noTeamLoginState(hi UserHelloMessage) SquadLoginState {
 	return state
 }
 
-// selfTeamLoginState builds a valid ONE-MEMBER team whose sole member IS the caller, so a squadless
-// player's client self-match (sub_823BB678) finds itself (on its own US) instead of failing and clearing
-// its identity. The caller's US is resolved (minted if new) from combasProfiles by the login-header xuid.
-// Falls back to "no team" if the profile can't be resolved so login never breaks. See squadlessSelfTeam.
-func (s *squadLoginServer) selfTeamLoginState(ctx context.Context, hi UserHelloMessage, gamertag string) SquadLoginState {
-	profile, err := s.repo.EnsureProfile(ctx, string(hi.Xuid[:]), gamertag)
-	if err != nil || profile.UserID == "" {
-		logging.Warn.Printf("[%s] self-team profile resolve failed, using no-team: %v", s.serverConfig.Label, err)
-		return noTeamLoginState(hi)
-	}
-	name := gamertag
-	if name == "" {
-		name = "Solo"
-	}
-	state := SquadLoginState{Header: CreateHeader(hi.Xuid, hi.Order)}
-	t := &state.Data.Team
-	t.Status = 0 // valid team so the client keeps (not clears) its record
-	copy(t.TeamName[:], name)
-	t.CountryCode = 'A'
-	t.MemberCount = 1
-	t.TeamInfoCount = atomic.AddInt32(&teamInfoSeq, 1) // monotonic freshness (see teamInfoSeq)
-	t.TeamRank = 1
-	t.Language = 'J'
-	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
-
-	_ = profile // profile ensured (mints the player's US for later), but not surfaced in this variant
-	m := &state.Data.Members[0]
-	m.XUID = xuidToInt64(hi.Xuid) // the caller's binary id occupies the member slot ("TM id" set)
-	// EXPERIMENT variant (operator, 2026-07-18): leave UserID (US) ZEROED and DON'T mark the caller as
-	// leader. The prior variant (US populated + LeaderFlg=1) made the client render the caller as the sole
-	// rostered leader -> "booted themself from a squad". Here the member carries only its id, no US/leader,
-	// so the record is a valid team without presenting a populated solo roster.
-	copy(m.UserName[:], name)
-	m.UserNumber = 1
-	m.Rank = [3]byte{0x00, 0x00, 0x01}
-	return state
-}
-
 type squadLoginServer struct {
 	*messageServer
 	repo *SquadRepository // nil when Mongo is disabled -> static squad record
@@ -370,11 +312,6 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 	s.repo.RefreshGamertag(readCtx, string(hi.Xuid[:]), gamertag)
 
 	if teamIDIsEmpty(teamID) {
-		// Squadless (incl. the moment a player leaves): a self-team keeps the client from clearing its
-		// identity; the old "no team" reply is the SQUADLESS_SELF_TEAM=0 path.
-		if squadlessSelfTeam {
-			return s.selfTeamLoginState(readCtx, hi, gamertag)
-		}
 		return noTeamLoginState(hi)
 	}
 	squad, err := s.repo.SquadByTeamID(readCtx, teamID)
@@ -383,12 +320,9 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 		return CreateSquadLoginState(hi, packet)
 	}
 	if squad == nil {
-		// Client holds a team id we don't know (e.g. a save from before the DB existed): treat as squadless
-		// (self-team) so it keeps a valid solo identity rather than clearing, instead of a bare "no team".
-		logging.Warn.Printf("[%s] unknown team id %q -> squadless self-team", s.serverConfig.Label, teamID)
-		if squadlessSelfTeam {
-			return s.selfTeamLoginState(readCtx, hi, gamertag)
-		}
+		// Client holds a team id we don't know (e.g. a save from before the DB existed); report no team
+		// so it reconciles rather than serving a stale fabricated squad.
+		logging.Warn.Printf("[%s] unknown team id %q -> no team", s.serverConfig.Label, teamID)
 		return noTeamLoginState(hi)
 	}
 	return squadLoginStateFromSquad(hi, squad)
