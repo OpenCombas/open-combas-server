@@ -199,11 +199,50 @@ func (r *SquadRepository) CreditBattle(ctx context.Context, winnerTeam, loserTea
 		}
 	}
 	if isRealTeam(loserTeam) && loserTeam != winnerTeam {
-		if _, err := r.stats.UpdateOne(ctx, bson.M{"teamId": loserTeam}, bson.M{"$inc": bson.M{"battles.played": int32(1)}}, options.UpdateOne().SetUpsert(true)); err != nil {
+		// The loser FORFEITS the same capture points the winner took. This mirrors the world layer, where a
+		// mission's OccDelta is added to the winning nation and removed from the losing one (applyBattle) --
+		// capture points are the squad-level view of that same occupation swing, so making it zero-sum here
+		// keeps the squad board consistent with the war map.
+		//
+		// Renown is NOT debited: it only decreases when a member leaves (see DebitDepartingMember).
+		dec := bson.M{"battles.played": int32(1)}
+		if capturePoints > 0 {
+			var st SquadStats
+			if err := r.stats.FindOne(ctx, bson.M{"teamId": loserTeam}).Decode(&st); err != nil {
+				if !errors.Is(err, mongo.ErrNoDocuments) {
+					return err
+				}
+				// No stats doc: nothing banked to forfeit, so just record the loss.
+			} else {
+				dTotal, dSeason := debitBucket(st.CapturePoints, season, capturePoints)
+				if dTotal > 0 {
+					dec["capturePoints.total"] = -dTotal
+				}
+				if dSeason > 0 {
+					dec["capturePoints.bySeason."+season] = -dSeason
+				}
+			}
+		}
+		if _, err := r.stats.UpdateOne(ctx, bson.M{"teamId": loserTeam}, bson.M{"$inc": dec}, options.UpdateOne().SetUpsert(true)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// debitBucket returns how much may actually be taken from a StatBucket's running total and its season
+// sub-total, each floored at 0 and computed independently.
+//
+// The two can legitimately diverge -- a squad that earned in an earlier season has a total larger than its
+// current-season bucket -- so a blind negative $inc could drive one negative. A negative bucket would sort
+// the squad BELOW squads that never played, which reads as a bug on the ranking board.
+func debitBucket(b StatBucket, season string, amount int32) (dTotal, dSeason int32) {
+	if amount <= 0 {
+		return 0, 0
+	}
+	dTotal = min(amount, max(b.Total, 0))
+	dSeason = min(amount, max(b.BySeason[season], 0))
+	return dTotal, dSeason
 }
 
 // departingMemberShare is one member's equal share of a renown bucket: renown is treated as a pool split

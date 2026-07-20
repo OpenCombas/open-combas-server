@@ -112,3 +112,54 @@ func TestDepartingMemberKeepsRenownPerMemberStable(t *testing.T) {
 		}
 	}
 }
+
+func TestDebitBucket(t *testing.T) {
+	const season = "0014"
+	mk := func(total, seasonVal int32) StatBucket {
+		return StatBucket{Total: total, BySeason: map[string]int32{season: seasonVal}}
+	}
+	cases := []struct {
+		name             string
+		bucket           StatBucket
+		amount           int32
+		wantTot, wantSea int32
+	}{
+		{"plain debit", mk(1000, 400), 100, 100, 100},
+		// The buckets diverge for a squad that earned in an earlier season: the season sub-total must not be
+		// driven negative just because the running total can absorb the full amount.
+		{"season bucket smaller than the debit", mk(1000, 30), 100, 100, 30},
+		{"total smaller than the debit", mk(40, 40), 100, 40, 40},
+		{"nothing banked", mk(0, 0), 100, 0, 0},
+		{"already negative is not amplified", mk(-50, -50), 100, 0, 0},
+		{"zero amount", mk(1000, 400), 0, 0, 0},
+		{"negative amount is ignored", mk(1000, 400), -20, 0, 0},
+		{"exact drain", mk(100, 100), 100, 100, 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotTot, gotSea := debitBucket(tc.bucket, season, tc.amount)
+			if gotTot != tc.wantTot || gotSea != tc.wantSea {
+				t.Errorf("debitBucket(%+v, %d) = (%d,%d), want (%d,%d)",
+					tc.bucket, tc.amount, gotTot, gotSea, tc.wantTot, tc.wantSea)
+			}
+		})
+	}
+}
+
+// A bucket can never be pushed below zero, whatever sequence of debits is applied -- a negative would sort
+// the squad below squads that never played.
+func TestDebitBucketNeverGoesNegative(t *testing.T) {
+	const season = "0014"
+	b := StatBucket{Total: 250, BySeason: map[string]int32{season: 90}}
+	for i := 0; i < 20; i++ {
+		dTot, dSea := debitBucket(b, season, 40)
+		b.Total -= dTot
+		b.BySeason[season] -= dSea
+		if b.Total < 0 || b.BySeason[season] < 0 {
+			t.Fatalf("iteration %d drove a bucket negative: total=%d season=%d", i, b.Total, b.BySeason[season])
+		}
+	}
+	if b.Total != 0 || b.BySeason[season] != 0 {
+		t.Errorf("after repeated debits buckets = (%d,%d), want (0,0)", b.Total, b.BySeason[season])
+	}
+}
