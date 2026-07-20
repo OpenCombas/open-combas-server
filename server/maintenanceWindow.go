@@ -24,43 +24,56 @@ type MaintenanceWindow struct {
 	End   time.Time `bson:"end"`
 }
 
-// The client derives THREE states from (now, start, end) in Release.xex sub_823B5FC8, and the announce gate
-// sub_82198EC8 turns them into popups:
+// The client derives three flags from (now, start, end) -- Release.xex sub_823B5FC8, retail sub_82162B48's
+// operands -- and TWO separate subsystems consume them:
 //
-//	now <  start (beyond ~15 min)  -> all three flags 0 -> gate FALLS THROUGH -> dated "server will be out
-//	                                  of service from HH:MM on MM/DD/YYYY" popup (FMG 2505, dialog 5349)
-//	now <  start (within ~15 min)  -> +2900 "approaching" -> countdown popup (FMG 2507, dialog 5345)
-//	start <= now <= end            -> +2904 "in maintenance" -> in-maintenance announce
-//	now >  end                     -> +2908 "ended" -> gate returns early, NOTHING SHOWN
+//	window        flag   announce gate                        online available?
+//	-----------   -----  -----------------------------------  -----------------
+//	future        none   dated "out of service from HH:MM on  YES
+//	                     MM/DD/YYYY" (FMG 2505, dialog 5349),
+//	                     ONCE per session (latched)
+//	< ~15 min     +2900  countdown (FMG 2507, dialog 5345)    yes
+//	now inside    +2904  in-maintenance (FMG 2506)            NO
+//	past          +2908  nothing                              NO
 //
-// The counter-intuitive consequence: a window far in the FUTURE is the one setting guaranteed to nag every
-// login, and pushing it further out does not help -- the ~15 minute announce thresholds (dword_82059EEC =
-// 900/600/300/60) gate only the countdown, never the dated announce.
+// The availability predicate is the trap. Release.xex sub_82151700 (retail; 7 call sites across the menu
+// code) is:
 //
-// So "no maintenance scheduled" must be expressed as a window that has ALREADY PASSED, which is what
-// silentPastWindow returns.
+//	return !netmgr || netmgr[+3944] || netmgr[+3948] || netmgr[+8] != 0;
+//
+// It treats "maintenance ENDED" as unavailable exactly like "in maintenance". So a window in the PAST does
+// silence the announce -- but only by telling the client the server is offline, which surfaces as "the
+// Chromehounds server is currently unavailable due to maintenance". That is strictly worse than the popup
+// it removes. (Measured 2026-07-20: an ...-48h/-24h window produced precisely that.)
+//
+// There is NO encoding for "no maintenance scheduled". All-flags-zero IS the healthy state, and it is the
+// state that shows the dated announce. The title assumes a window always exists and tells players about it
+// once per session. So the correct default is a window far enough in the FUTURE to be harmless, and the
+// once-per-session popup is by design rather than a bug to engineer around.
+//
+// Offsets differ per build (Preview 2900/2904/2908, retail 3940/3944/3948) but the logic is identical --
+// retail sub_82162B48 is structurally the same function as Preview sub_82198EC8.
 const (
-	// silentWindowStartAgo/EndAgo place the default window comfortably in the past. The margin absorbs
-	// clock skew between us and the console's server-synced clock (seeded from ServerLocalTime and ticked
-	// forward locally, Release.xex +2864); if `now` ever landed before `end` the client would believe
-	// maintenance was in progress and boot everyone to the title screen.
-	silentWindowStartAgo = 48 * time.Hour
-	silentWindowEndAgo   = 24 * time.Hour
+	// defaultWindowStartIn/EndIn place the default window far enough out that the announced date is
+	// plausible and distant. Must stay well beyond the ~15 minute announce thresholds (dword_82059EEC =
+	// 900/600/300/60) or the countdown popup starts instead.
+	defaultWindowStartIn = 30 * 24 * time.Hour
+	defaultWindowEndIn   = defaultWindowStartIn + 2*time.Hour
 )
 
-// silentPastWindow is the "nothing scheduled" window: entirely in the past, so the client computes
-// "maintenance ended" and announces nothing.
-func silentPastWindow(now time.Time) (start, end time.Time) {
-	return now.Add(-silentWindowStartAgo), now.Add(-silentWindowEndAgo)
+// defaultFutureWindow is the "nothing scheduled" window. It deliberately sits in the future: that is the
+// only state in which the client considers the server AVAILABLE (see the table above).
+func defaultFutureWindow(now time.Time) (start, end time.Time) {
+	return now.Add(defaultWindowStartIn), now.Add(defaultWindowEndIn)
 }
 
 // MaintenanceWindowFor resolves the window to serve at time `now`.
 //
-// A stored window is served verbatim while it is still relevant -- that is what makes the client announce
-// it -- but once it has fully elapsed it is indistinguishable from the silent default, so it is simply
-// served as-is (already in the past = silent). A repo-less or empty deployment gets the silent default.
+// A stored window is served verbatim -- that is what makes the client announce it. An ELAPSED stored window
+// is deliberately NOT served: once past, it would mark the server unavailable (see the table above), so it
+// falls back to the default. A repo-less or empty deployment gets the default too.
 func (r *WorldRepository) MaintenanceWindowFor(ctx context.Context, now time.Time) (start, end time.Time) {
-	start, end = silentPastWindow(now)
+	start, end = defaultFutureWindow(now)
 	if r == nil || r.maintenance == nil {
 		return start, end
 	}
@@ -73,9 +86,14 @@ func (r *WorldRepository) MaintenanceWindowFor(ctx context.Context, now time.Tim
 		return start, end
 	}
 	if w.Start.IsZero() || w.End.IsZero() || !w.End.After(w.Start) {
-		// A malformed window would put the client into an unpredictable state (possibly "in maintenance",
-		// which boots players); refuse it and announce nothing.
-		logging.Warn.Printf("maintenance window is malformed (start=%v end=%v), announcing none", w.Start, w.End)
+		// A malformed window would put the client into an unpredictable state; refuse it.
+		logging.Warn.Printf("maintenance window is malformed (start=%v end=%v), using default", w.Start, w.End)
+		return start, end
+	}
+	if !w.End.After(now) {
+		// Fully elapsed: serving it would set the client's "ended" flag, which its availability predicate
+		// treats as the server being OFFLINE. Fall back rather than take the whole server down.
+		logging.Info.Printf("maintenance window ended at %v, using default", w.End)
 		return start, end
 	}
 	return w.Start.UTC(), w.End.UTC()
