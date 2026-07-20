@@ -46,7 +46,7 @@ func TestSquadEmblemRoundTrip(t *testing.T) {
 	emblems[8] = 0x02 // emblem[0] Color
 
 	squad := &Squad{TeamID: "TM0001000000000001", Name: "OpenCombas", Faction: "B", Emblems: emblems}
-	state := squadLoginStateFromSquad(UserHelloMessage{Xuid: squadXuid}, squad)
+	state := squadLoginStateFromSquad(UserHelloMessage{Xuid: squadXuid}, squad, nil)
 	buf := encodeToBuffer(state, constants.SquadLoginResponseSize, t)
 	body := buf[constants.MinHelloMessageSize:]
 

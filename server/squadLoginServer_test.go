@@ -46,8 +46,11 @@ func TestSquadLoginPopulated(t *testing.T) {
 	if body[17] != 'B' {
 		t.Errorf("country code = %q, want 'B'", body[17])
 	}
-	if body[18] != 1 {
-		t.Errorf("member count = %d, want 1", body[18])
+	// Offset 18 is the lobby CAPTURE counter (sub_821AEA50 -> "string_Capture"), not the roster size. The
+	// static fallback squad has no stats doc, so it must serve 0 -- serving the member count here is what
+	// made the lobby render "Capture 1".
+	if body[18] != 0 {
+		t.Errorf("capture points = %d, want 0 (static squad has no stats)", body[18])
 	}
 
 	// Member[0] at offset 288 (stride 48).

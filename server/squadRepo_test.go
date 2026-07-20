@@ -60,7 +60,7 @@ func TestSquadLoginStateFromSquad(t *testing.T) {
 		},
 	}
 
-	state := squadLoginStateFromSquad(UserHelloMessage{Xuid: squadXuid}, squad)
+	state := squadLoginStateFromSquad(UserHelloMessage{Xuid: squadXuid}, squad, nil)
 	buf := encodeToBuffer(state, constants.SquadLoginResponseSize, t)
 	body := buf[constants.MinHelloMessageSize:]
 
@@ -97,8 +97,10 @@ func TestSquadLoginStateFromSquad(t *testing.T) {
 	if body[17] != 'B' {
 		t.Errorf("country code = %q, want 'B'", body[17])
 	}
-	if body[18] != 2 {
-		t.Errorf("member count = %d, want 2", body[18])
+	// Offset 18 is the lobby CAPTURE counter, not the roster size -- this call passes nil stats, so 0.
+	// The roster size is carried by the member array itself, which the XUID check below covers.
+	if body[18] != 0 {
+		t.Errorf("capture points = %d, want 0 (nil stats)", body[18])
 	}
 	if got := int64(binary.LittleEndian.Uint64(body[288:296])); got != 0x000900001AC5EE91 {
 		t.Errorf("member XUID = %#x", got)
@@ -272,5 +274,56 @@ func TestAddMemberXUIDAuthoritative(t *testing.T) {
 	// A genuinely-new XUID whose name collides with an existing member is still rejected with '3'.
 	if st, _, _ := repo.AddMember(ctx, tid, "000900000000CCCC", "gtC", "Bee", 1); st != '3' {
 		t.Errorf("new member with colliding name: status %q, want '3'", st)
+	}
+}
+
+// TestSquadLoginLobbyCounters pins the two team-header fields the squad lobby renders as Capture and
+// Renown. Both were previously misnamed from an empirically-derived field list -- offset 18 was serving the
+// roster size and offset 20 the ranking position, so a squad with 444 lifetime renown displayed
+// "Renown 1". The offsets are fixed by Release.xex sub_821AF778, which passes hdr+18 to a widget resolved
+// as "string_Capture" and hdr+20 to one resolved as "string_Renown".
+func TestSquadLoginLobbyCounters(t *testing.T) {
+	squad := &Squad{
+		TeamID:  "TM0000000001",
+		Name:    "TestSquad",
+		Faction: "B",
+		Rank:    1, // deliberately 1: the old bug served THIS into the Renown field
+		Members: []SquadMemberRecord{{XUID: string(squadXuid[:]), Gamertag: "tester", Leader: true}},
+	}
+	stats := &SquadStats{TeamID: "TM0000000001"}
+	stats.Renown.Total = 444
+	stats.CapturePoints.Total = 37
+
+	state := squadLoginStateFromSquad(UserHelloMessage{Xuid: squadXuid}, squad, stats)
+	buf := encodeToBuffer(state, constants.SquadLoginResponseSize, t)
+	body := buf[constants.MinHelloMessageSize:]
+
+	if body[18] != 37 {
+		t.Errorf("capture points (off 18) = %d, want 37", body[18])
+	}
+	if got := int32(binary.LittleEndian.Uint32(body[20:24])); got != 444 {
+		t.Errorf("renown (off 20) = %d, want 444 (squad.Rank=1 must NOT appear here)", got)
+	}
+}
+
+// TestSquadLoginCaptureSaturates covers the wire limit: capture points are an int32 in the database but a
+// single byte on the wire, so a high total must peg at 255 rather than wrap to a small, plausible-looking
+// number.
+func TestSquadLoginCaptureSaturates(t *testing.T) {
+	squad := &Squad{
+		TeamID:  "TM0000000002",
+		Name:    "TestSquad",
+		Faction: "A",
+		Members: []SquadMemberRecord{{XUID: string(squadXuid[:]), Gamertag: "tester", Leader: true}},
+	}
+	stats := &SquadStats{TeamID: "TM0000000002"}
+	stats.CapturePoints.Total = 300 // would wrap to 44 in a plain byte conversion
+
+	state := squadLoginStateFromSquad(UserHelloMessage{Xuid: squadXuid}, squad, stats)
+	buf := encodeToBuffer(state, constants.SquadLoginResponseSize, t)
+	body := buf[constants.MinHelloMessageSize:]
+
+	if body[18] != 255 {
+		t.Errorf("capture points (off 18) = %d, want 255 (saturated, not wrapped)", body[18])
 	}
 }

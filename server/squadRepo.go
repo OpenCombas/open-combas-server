@@ -297,6 +297,28 @@ func (r *SquadRepository) DebitDepartingMember(ctx context.Context, teamID strin
 	return err
 }
 
+// AllTeamIDs returns every real squad's team id. Used by out-of-band tooling (cmd/seedbattles) that needs
+// to enumerate squads; the game path always works from a specific team id.
+func (r *SquadRepository) AllTeamIDs(ctx context.Context) ([]string, error) {
+	cur, err := r.squads.Find(ctx, bson.M{}, options.Find().SetProjection(bson.M{"teamId": 1}))
+	if err != nil {
+		return nil, err
+	}
+	var docs []struct {
+		TeamID string `bson:"teamId"`
+	}
+	if err := cur.All(ctx, &docs); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(docs))
+	for _, d := range docs {
+		if isRealTeam(d.TeamID) {
+			ids = append(ids, d.TeamID)
+		}
+	}
+	return ids, nil
+}
+
 // RankEntry is one ranked squad for the leaderboard (1262).
 type RankEntry struct {
 	TeamID string
