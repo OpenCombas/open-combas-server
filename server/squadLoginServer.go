@@ -95,36 +95,61 @@ type SquadMember struct {
 	Rank       [3]byte  // off 45 - User Rank (3 raw bytes, big-endian assembled)
 }
 
+// Squad grade index bounds. The client renders the grade as FMG string 5700+idx, so 0 resolves to the
+// panel's own "Squad Grade" label and anything past the table runs off the end of it. Grade 1 is the
+// lowest rank ("Rookie"); 13 is the highest. See SquadTeamInfo.Grade.
+const (
+	squadGradeMin = 1
+	squadGradeMax = 13
+)
+
+// clampSquadGrade maps a stored grade into the renderable range. Squads written before Squad.Grade existed
+// decode as 0, which would otherwise display the label text in place of the value.
+func clampSquadGrade(g int32) byte {
+	if g < squadGradeMin {
+		return squadGradeMin
+	}
+	if g > squadGradeMax {
+		return squadGradeMax
+	}
+	return byte(g)
+}
+
 // SquadTeamInfo is the 92-byte team header. Wire schema "C20, I11, C20, I2".
 type SquadTeamInfo struct {
 	Status      byte     // off 0  - 0 = valid team; non-zero => record zeroed ("no team")
 	TeamName    [16]byte // off 1  - Team Name
 	CountryCode byte     // off 17 - Country Code ('A' Tarakia / 'B' Morskoj / 'C' Sal Kar)
 	MemberCount byte     // off 18 - Number Of Member
-	_           byte     // off 19 - pad (end of C20)
-	TeamRank    int32    // off 20 - Team Rank
-	_           int32    // off 24
-	Sorties     int32    // off 28 - Number of sorties
-	Wins        int32    // off 32 - Number of Win
-	Losses      int32    // off 36 - Number of Lose
-	ShootDowns  int32    // off 40 - Number of Shoot Down
-	ConShootDn  int32    // off 44 - Number of Con Shoot Down
-	CombasDown  int32    // off 48 - Number of Combas Down
-	CmdBaseDown int32    // off 52 - Number of Command Base Down
-	_           int32    // off 56
-	_           int32    // off 60 (end of I11)
-	Color1      [3]byte  // off 64 - Team Color 1 (R,G,B)
-	Color2      [3]byte  // off 67 - Team Color 2
-	Color3      [3]byte  // off 70 - Team Color 3
-	Color4      [3]byte  // off 73 - Team Color 4
-	Patern      byte     // off 76 - Team Patern (emblem)
-	Stance      byte     // off 77 - parser "Team Profile"; = squad Stance (config setting)
-	Activity    byte     // off 78 - parser "Main Play Time"; = Activity Level (config setting)
-	Language    byte     // off 79 - Language (config setting)
-	Regions     byte     // off 80 - parser "Strategy"; = Connected Regions (config setting)
-	RoleFlags   byte     // off 81 - parser "Recruit Type"; = role bitmask (config setting)
-	_           [2]byte  // off 82 - pad (end of C20)
-	_           int32    // off 84
+	// off 19 - SQUAD GRADE index. Not padding: the squad panel reads this byte and renders FMG string
+	// 5700+idx (Release.xex sub_821AF778 passes *(u8*)(hdr+19) to sub_821ADF48, which does
+	// sub_82153738(idx + 5700)). Valid grades are 1..13 -> "Rookie".."". Index 0 resolves to FMG 5700,
+	// which is the panel's own LABEL string, so a zero here renders as "Squad Grade    Squad Grade".
+	// The same +19/+18/+20 offsets in that function match MemberCount and TeamRank, confirming alignment.
+	Grade       byte    // off 19 (end of C20)
+	TeamRank    int32   // off 20 - Team Rank
+	_           int32   // off 24
+	Sorties     int32   // off 28 - Number of sorties
+	Wins        int32   // off 32 - Number of Win
+	Losses      int32   // off 36 - Number of Lose
+	ShootDowns  int32   // off 40 - Number of Shoot Down
+	ConShootDn  int32   // off 44 - Number of Con Shoot Down
+	CombasDown  int32   // off 48 - Number of Combas Down
+	CmdBaseDown int32   // off 52 - Number of Command Base Down
+	_           int32   // off 56
+	_           int32   // off 60 (end of I11)
+	Color1      [3]byte // off 64 - Team Color 1 (R,G,B)
+	Color2      [3]byte // off 67 - Team Color 2
+	Color3      [3]byte // off 70 - Team Color 3
+	Color4      [3]byte // off 73 - Team Color 4
+	Patern      byte    // off 76 - Team Patern (emblem)
+	Stance      byte    // off 77 - parser "Team Profile"; = squad Stance (config setting)
+	Activity    byte    // off 78 - parser "Main Play Time"; = Activity Level (config setting)
+	Language    byte    // off 79 - Language (config setting)
+	Regions     byte    // off 80 - parser "Strategy"; = Connected Regions (config setting)
+	RoleFlags   byte    // off 81 - parser "Recruit Type"; = role bitmask (config setting)
+	_           [2]byte // off 82 - pad (end of C20)
+	_           int32   // off 84
 	// off 88 - TEAM-INFO UPDATE SERIAL. The client's team-info ingest (Release.xex sub_823C0ED8) accepts +
 	// REBROADCASTS the roster to peers (P2P msg 0x7001) only when this EXCEEDS the value it cached ("VALID");
 	// otherwise "OLD" and discarded. Fed from Squad.UpdateSeq (bumped on real squad mutations), so a genuine
@@ -215,6 +240,7 @@ func CreateSquadLoginState(hi UserHelloMessage, packet []byte) SquadLoginState {
 	t.MemberCount = 1
 	t.TeamInfoCount = 1 // static record: fixed serial (no persistence to bump)
 	t.TeamRank = 1
+	t.Grade = squadGradeMin
 	t.Language = 'J'
 	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
 
@@ -243,6 +269,7 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 		t.CountryCode = 'A'
 	}
 	t.TeamRank = squad.Rank
+	t.Grade = clampSquadGrade(squad.Grade)
 	t.Language = 'J'
 	t.Color1 = [3]byte{0xFF, 0x00, 0x00}
 

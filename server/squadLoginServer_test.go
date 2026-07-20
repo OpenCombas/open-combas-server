@@ -4,6 +4,7 @@ import (
 	"ChromehoundsStatusServer/constants"
 	"encoding/binary"
 	"testing"
+	"unsafe"
 )
 
 // squadXuid is the ASCII-hex XUID seen in the create-squad captures ("000900001AC5EE91").
@@ -112,5 +113,38 @@ func TestSquadAck(t *testing.T) {
 	}
 	if status := buf[constants.MinHelloMessageSize]; status != '1' {
 		t.Errorf("status byte = %q, want '1' (success)", status)
+	}
+}
+
+func TestClampSquadGrade(t *testing.T) {
+	cases := []struct {
+		name  string
+		grade int32
+		want  byte
+	}{
+		// 0 is what squads written before Squad.Grade existed decode as. Left unclamped it renders FMG
+		// 5700, the panel's own "Squad Grade" label, in place of the value.
+		{"legacy squad with no grade", 0, squadGradeMin},
+		{"negative", -3, squadGradeMin},
+		{"lowest", 1, 1},
+		{"mid", 7, 7},
+		{"highest", 13, 13},
+		{"past the FMG table", 14, squadGradeMax},
+		{"far past", 9999, squadGradeMax},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := clampSquadGrade(tc.grade); got != tc.want {
+				t.Errorf("clampSquadGrade(%d) = %d, want %d", tc.grade, got, tc.want)
+			}
+		})
+	}
+}
+
+// The grade byte must land at team-header offset 19: Release.xex sub_821AF778 reads *(u8*)(hdr+19) and
+// passes it to the FMG lookup as 5700+idx.
+func TestSquadGradeWireOffset(t *testing.T) {
+	if off := unsafe.Offsetof(SquadTeamInfo{}.Grade); off != 19 {
+		t.Errorf("SquadTeamInfo.Grade at offset %d, want 19", off)
 	}
 }

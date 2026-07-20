@@ -81,10 +81,15 @@ type SquadSettings struct {
 
 // Squad is a persistent guild.
 type Squad struct {
-	TeamID   string              `bson:"teamId"`
-	Name     string              `bson:"name"`
-	Faction  string              `bson:"faction"` // "A"/"B"/"C"
-	Rank     int32               `bson:"rank"`
+	TeamID  string `bson:"teamId"`
+	Name    string `bson:"name"`
+	Faction string `bson:"faction"` // "A"/"B"/"C"
+	Rank    int32  `bson:"rank"`
+	// Grade is the squad grade index (squadGradeMin..squadGradeMax), served as team-header off 19 and
+	// rendered by the client as FMG string 5700+Grade. Squads created before this field existed decode as
+	// 0, which the login path floors to squadGradeMin -- see clampSquadGrade. No live generator advances
+	// it yet; the squad-history repo already records grade up/down events for when one exists.
+	Grade    int32               `bson:"grade,omitempty"`
 	Members  []SquadMemberRecord `bson:"members"`
 	Settings *SquadSettings      `bson:"settings,omitempty"`
 	Emblems  []byte              `bson:"emblems,omitempty"` // 16 emblem layers (192 bytes, wire "S4,C3" format)
@@ -677,6 +682,7 @@ func (r *SquadRepository) CreateSquad(ctx context.Context, name, faction string,
 		Name:    name,
 		Faction: faction,
 		Rank:    1,
+		Grade:   squadGradeMin, // every squad starts at the lowest grade
 		Members: []SquadMemberRecord{{
 			XUID:       leader.XUID,
 			UserID:     leader.UserID,
