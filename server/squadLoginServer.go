@@ -418,6 +418,15 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 	// joiner's reconnect timing ever shifts, this fails SILENTLY and looks exactly like the original bug --
 	// joiner kicked to the title screen. If that reappears, re-derive the gap before suspecting anything else.
 	//
+	// Grade is derived from lifetime renown at read time rather than trusted from the squad doc, so it is
+	// correct even if a battle credit landed without a RefreshSquadGrade (see squadGrade.go). On a read
+	// error the stored value is served instead -- a stale grade beats failing a login over a cosmetic field.
+	if grade, err := s.repo.SquadGradeFor(readCtx, teamID); err == nil {
+		squad.Grade = int32(grade)
+	} else {
+		logging.Warn.Printf("[%s] grade lookup failed for %s, serving stored grade: %v", s.serverConfig.Label, teamID, err)
+	}
+
 	// SCOPE. Only users flagged by a preceding 182 join are stalled, and only once (the marker is consumed).
 	// A member signing in normally -- cold boot, no join in flight -- has no stale applicant entry on any host
 	// and must not pay the latency. Leader is excluded on top of that: the host also issues a 184 inside its

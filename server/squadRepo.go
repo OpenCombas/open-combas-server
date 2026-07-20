@@ -1,8 +1,10 @@
 package server
 
 import (
+	"ChromehoundsStatusServer/logging"
 	"ChromehoundsStatusServer/persistence"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -87,8 +89,9 @@ type Squad struct {
 	Rank    int32  `bson:"rank"`
 	// Grade is the squad grade index (squadGradeMin..squadGradeMax), served as team-header off 19 and
 	// rendered by the client as FMG string 5700+Grade. Squads created before this field existed decode as
-	// 0, which the login path floors to squadGradeMin -- see clampSquadGrade. No live generator advances
-	// it yet; the squad-history repo already records grade up/down events for when one exists.
+	// 0, which the login path floors to squadGradeMin -- see clampSquadGrade. Derived from lifetime renown
+	// on a log ladder (see squadGrade.go); this stored copy is what RefreshSquadGrade persists so grade
+	// changes can raise a history event.
 	Grade    int32               `bson:"grade,omitempty"`
 	Members  []SquadMemberRecord `bson:"members"`
 	Settings *SquadSettings      `bson:"settings,omitempty"`
@@ -201,6 +204,58 @@ func (r *SquadRepository) CreditBattle(ctx context.Context, winnerTeam, loserTea
 		}
 	}
 	return nil
+}
+
+// departingMemberShare is one member's equal share of a renown bucket: renown is treated as a pool split
+// across the active roster, so a leaver takes 1/N of it. Integer division rounds the debit DOWN, which
+// deliberately favours the squad -- repeated join/leave churn can never drain a bucket below what the
+// squad actually earned. Non-positive buckets and rosters under 2 debit nothing.
+func departingMemberShare(bucket int32, memberCountBefore int) int32 {
+	if bucket <= 0 || memberCountBefore < 2 {
+		return 0
+	}
+	return bucket / int32(memberCountBefore)
+}
+
+// DebitDepartingMember removes a leaving member's share of the squad's renown. memberCountBefore is the
+// roster size INCLUDING the departing member.
+//
+// The share is Renown/N, which is the unique decrement that leaves Renown-Per-Member unchanged:
+// (R - R/N)/(N-1) == R/N. That matters because the game ranks squads by exactly that metric (1262 KBN 3),
+// so a departure moves a squad's Renown and Capture-Points standing without distorting its per-member one.
+//
+// Both the running total and the current season bucket are debited, each floored at 0 -- the buckets can
+// diverge (a squad that earned in an earlier season has a total larger than its season bucket), so the
+// decrement is computed per-bucket in Go rather than as a blind negative $inc, which could drive a bucket
+// negative and then rank the squad below squads that never played.
+func (r *SquadRepository) DebitDepartingMember(ctx context.Context, teamID string, memberCountBefore int, season string) error {
+	if memberCountBefore < 2 {
+		// Sole member leaving disbands the squad; its stats doc is orphaned and debiting it is pointless.
+		return nil
+	}
+	var stats SquadStats
+	if err := r.stats.FindOne(ctx, bson.M{"teamId": teamID}).Decode(&stats); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil // never fought, nothing to debit
+		}
+		return err
+	}
+
+	dTotal := departingMemberShare(stats.Renown.Total, memberCountBefore)
+	dSeason := departingMemberShare(stats.Renown.BySeason[season], memberCountBefore)
+	if dTotal == 0 && dSeason == 0 {
+		return nil
+	}
+
+	dec := bson.M{}
+	if dTotal > 0 {
+		dec["renown.total"] = -dTotal
+	}
+	if dSeason > 0 {
+		dec["renown.bySeason."+season] = -dSeason
+	}
+	_, err := r.stats.UpdateOne(ctx, bson.M{"teamId": teamID}, bson.M{"$inc": dec})
+	return err
 }
 
 // RankEntry is one ranked squad for the leaderboard (1262).
@@ -446,6 +501,17 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, xuid, userID
 	// re-created squad of the same id would inherit stale history -- acceptable since ids are monotonic and
 	// never reused (see formatTeamID).
 	_ = r.RecordSquadLeft(ctx, teamID, memberName, time.Now())
+
+	// A departure costs the squad the leaver's share of its renown, which can drop it a grade. Best-effort
+	// and after the roster write: a failure here must not turn a completed withdraw into an error the
+	// client retries, since the member is already gone. Skipped when the squad disbanded (doc deleted).
+	if len(sq.Members) > 1 {
+		if err := r.DebitDepartingMember(ctx, teamID, len(sq.Members), currentSeason); err != nil {
+			logging.Warn.Printf("renown debit failed for %s after member left: %v", teamID, err)
+		} else if _, err := r.RefreshSquadGrade(ctx, teamID); err != nil {
+			logging.Warn.Printf("grade refresh failed for %s after member left: %v", teamID, err)
+		}
+	}
 	return '1', nil // Delete Complete
 }
 

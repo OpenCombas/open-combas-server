@@ -60,6 +60,21 @@ func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
 	if s.squadRepo != nil {
 		if err := s.squadRepo.CreditBattle(ctx, res.WinnerTeam, res.LoserTeam, res.OccDelta, res.WinnerMerit, currentSeason); err != nil {
 			logging.Warn.Printf("[%s] squad-stat credit failed: %v", s.label, err)
+		} else {
+			// Renown moved, so either side's grade may have crossed a rung -- persist it and raise the
+			// matching up/down history event. BOTH teams are refreshed, not just the winner: renown can
+			// decrease, so a loser's grade can fall. Best-effort like the credit itself; login derives the
+			// grade live (see squadGrade.go), so a failure here costs the history event, not a wrong grade.
+			for _, team := range []string{res.WinnerTeam, res.LoserTeam} {
+				if !isRealTeam(team) {
+					continue
+				}
+				if grade, err := s.squadRepo.RefreshSquadGrade(ctx, team); err != nil {
+					logging.Warn.Printf("[%s] squad grade refresh failed for %s: %v", s.label, team, err)
+				} else {
+					logging.Info.Printf("[%s] squad %s grade now %d", s.label, team, grade)
+				}
+			}
 		}
 	}
 	logging.Info.Printf("[%s] area %d/%d: winner %c/%s (+%d occ, +%d renown) vs %c/%s",
