@@ -23,29 +23,51 @@ import (
 // +916. See SQUAD_STATS_DESIGN.md.
 //
 // REQUEST body: "<gamertag>,<teamID>,<SEA>,<KBN>"  (e.g. "ibac2,TM0001000000000005,1,1")
-//   SEA: 1 = Total, 2 = current Season      KBN: 1 = Renown, 2 = Capture Points, 3 = Renown-Per-Member
 //
-// RESPONSE: header(32) + block0 + block1 (each 1120 bytes). block0 = top-50 ranking, block1 = the
-// requesting squad's own entry (so the UI can show "your rank" outside the top 50). Per block, the parser
-// sub_823BDF18 byte-swaps "I2,C4" at +0 (I = int32, per the login schema convention) and "I50" at +916:
-//   +0x000  int32 count, int32 yourRank              ("I2")
-//   +0x008  4-char season code                        ("C4")
-//   +0x00C  4 reserved bytes  (header struct is 16B: 16 + 50*18 = 916 = the value array start)
-//   +0x010  50 x squad-name slots (raw ASCII, null-padded, 18 bytes each)
-//   +0x394  50 x int32 stat value (little-endian, "I50")
+//	SEA: 1 = Total, 2 = current Season      KBN: 1 = Renown, 2 = Capture Points, 3 = Renown-Per-Member
 //
-// The 50 int32 VALUES are the authoritative field (they validate the accumulation). Whether count is the
-// first or second I2 int32 is the last ⚠ (kept obvious to swap); everything else is confirmed.
+// RESPONSE: header(32) + block0 + block1 (each 1120 bytes).
+//
+// [LAYOUT CORRECTED 2026-07-20.] The previous layout here (status@+0, count@+4, season@+8, 18-byte names
+// @+16) was wrong in every field and rendered garbage on the ranking screen. The corrected layout was read
+// at instruction level from the render loop sub_821EDB38 (block base = obj+2332, stride 1120) and is
+// verified by closing exactly on 1120 bytes with no gap: 13+50=63, 63+800=863, 916+200=1116.
+// Full derivation: workspaces/chromehounds_ranking_re.md.
+//
+//	+0    int32   THE REQUESTER'S OWN global rank   -- header "I2,C4", rendered only when rank > 100
+//	+4    int32   the requester's own value
+//	+8    u8      the requester's own grade
+//	+12   u8      record count in THIS block                (sub_821EDB38 sums *(base+12) over both blocks)
+//	+13+i u8      nation 'A'|'B'|'C'                        (rendered as the nation icon)
+//	+63   50 x 16 squad name, NUL-terminated                (v22 = 16*i + base + 63)
+//	+863+i u8     grade, rendered as FMG 5700+grade         (same FMG base as the squad panel)
+//	+913  3 bytes pad
+//	+916  50 x int32 stat value, little-endian              (addressed as 4*(i+229)+base)
+//	+1116 u8      status, 0 = success                       (non-zero on EITHER block = error path)
+//
+// The two blocks are ranks 1-50 and 51-100 of ONE descending list -- not "top-50 + your entry". Proven by
+// the render loop's tie check reading block1_base-8 (= block0's value[49]) for the first entry of block 1,
+// which is only meaningful if the blocks are contiguous slices.
+//
+// There is NO paging: the request carries no offset/limit and the client is hard-capped at 100 entries.
 const (
 	rankingBlockSize    = 1120
 	rankingBlocks       = 2
 	rankingBodySize     = rankingBlockSize * rankingBlocks                // 2240
 	rankingResponseSize = constants.MinHelloMessageSize + rankingBodySize // 2272
-	rankingMaxEntries   = 50
-	rankingSeasonOffset = 8   // C4 season code (after the two I2 int32s)
-	rankingNameOffset   = 16  // names start here (16-byte header; 16 + 50*18 = 916 = value array)
-	rankingNameStride   = 18  // per-name slot width
-	rankingValueOffset  = 916 // I50 value array (confirmed by parser sub_823BDF18)
+	rankingMaxEntries   = 50                                              // per block; 100 total
+	rankingTotalEntries = rankingMaxEntries * rankingBlocks
+
+	rankingOwnRankOffset  = 0    // int32, requester's own global rank
+	rankingOwnValueOffset = 4    // int32, requester's own value
+	rankingOwnGradeOffset = 8    // u8,    requester's own grade
+	rankingCountOffset    = 12   // u8,    records in this block
+	rankingNationOffset   = 13   // u8 x 50
+	rankingNameOffset     = 63   // 16 bytes x 50
+	rankingNameStride     = 16   //
+	rankingGradeOffset    = 863  // u8 x 50
+	rankingValueOffset    = 916  // int32 x 50
+	rankingStatusOffset   = 1116 // u8, 0 = success
 )
 
 // parseSquadRanking pulls (teamID, SEA-is-season, KBN stat) from the request body.
@@ -67,22 +89,64 @@ func parseSquadRanking(packet []byte) (teamID string, kbn int, useSeason, ok boo
 	return teamID, kbn, sea == 2, teamID != "" && kbn >= 1 && kbn <= 3
 }
 
-// writeRankBlock encodes one 1120-byte block. The "I2" header is [status, count] (same pattern as the
-// News list reply, sub_823C6EB8): field0 = status (0 = success), field1 = record count. The render only
-// displays a block when its status is 0 and count > 0. C4 = the season code.
+// writeRankBlock encodes one 1120-byte block: the per-entry arrays plus the count and the success status.
+// The block-0-only "your own standing" header is written separately by writeOwnStanding, since block 1
+// must not carry it.
+//
+// Names are truncated to 15 bytes so the 16-byte slot always keeps a NUL terminator -- the render reads
+// them as C strings and an unterminated slot would run into the next name.
 func writeRankBlock(block []byte, entries []RankEntry) {
 	n := len(entries)
 	if n > rankingMaxEntries {
 		n = rankingMaxEntries
 	}
-	binary.LittleEndian.PutUint32(block[0:], 0)                          // I2 field 0: status (0 = success)
-	binary.LittleEndian.PutUint32(block[4:], uint32(n))                  // I2 field 1: valid record count
-	copy(block[rankingSeasonOffset:rankingSeasonOffset+4], currentSeason) // C4 season code
+	block[rankingStatusOffset] = 0 // 0 = success; non-zero on either block sends the client down the error path
+	block[rankingCountOffset] = byte(n)
 	for i := 0; i < n; i++ {
+		e := entries[i]
+		block[rankingNationOffset+i] = e.Nation
+		block[rankingGradeOffset+i] = e.Grade
+
 		nameOff := rankingNameOffset + i*rankingNameStride
-		copy(block[nameOff:nameOff+rankingNameStride], entries[i].Name)
-		binary.LittleEndian.PutUint32(block[rankingValueOffset+i*4:], uint32(entries[i].Value))
+		name := e.Name
+		if len(name) > rankingNameStride-1 {
+			name = name[:rankingNameStride-1]
+		}
+		copy(block[nameOff:nameOff+rankingNameStride], name)
+
+		binary.LittleEndian.PutUint32(block[rankingValueOffset+i*4:], uint32(e.Value))
 	}
+}
+
+// paginateRanking splits one descending list into the two blocks: ranks 1-50 and ranks 51-100.
+//
+// Block 1 is only non-empty once block 0 is FULL. The client's tie check reads across the seam (it takes
+// the value at block1_base-8, i.e. block0's entry 49, as the predecessor of block 1's first entry), so the
+// blocks must be contiguous slices of one list. Putting anything else in block 1 -- as the previous
+// "top-50 + your own entry" model did -- corrupts the rank numbering the client derives.
+//
+// Anything past 100 is dropped: the request carries no offset/limit and the client is hard-capped at 100.
+func paginateRanking(entries []RankEntry) (first, second []RankEntry) {
+	if len(entries) > rankingTotalEntries {
+		entries = entries[:rankingTotalEntries]
+	}
+	if len(entries) > rankingMaxEntries {
+		return entries[:rankingMaxEntries], entries[rankingMaxEntries:]
+	}
+	return entries, nil
+}
+
+// writeOwnStanding fills block 0's header with the requesting squad's own global standing. The client only
+// renders it when the rank exceeds 100 (i.e. the squad is off the end of the returned list), so it must
+// carry the TRUE global rank rather than one clamped to what was returned. rank is 1-based; 0 means the
+// requester is not ranked and the header is left zeroed.
+func writeOwnStanding(block0 []byte, rank int, e RankEntry) {
+	if rank <= 0 {
+		return
+	}
+	binary.LittleEndian.PutUint32(block0[rankingOwnRankOffset:], uint32(rank))
+	binary.LittleEndian.PutUint32(block0[rankingOwnValueOffset:], uint32(e.Value))
+	block0[rankingOwnGradeOffset] = e.Grade
 }
 
 type squadRankingServer struct {
@@ -119,13 +183,11 @@ func (s *squadRankingServer) buildResponse(hi UserHelloMessage, packet []byte) [
 		}
 	}
 
-	top := entries
-	if len(top) > rankingMaxEntries {
-		top = top[:rankingMaxEntries]
-	}
-	writeRankBlock(block0, top) // block 0 = top list
+	first, second := paginateRanking(entries)
+	writeRankBlock(block0, first)
+	writeRankBlock(block1, second)
 	if yourRank > 0 {
-		writeRankBlock(block1, []RankEntry{entries[yourRank-1]}) // block 1 = your entry
+		writeOwnStanding(block0, yourRank, entries[yourRank-1])
 	}
 	logging.Info.Printf("[%s] ranking kbn=%d season=%v -> %d squads (%q rank %d)", s.serverConfig.Label, kbn, useSeason, len(entries), teamID, yourRank)
 	return resp

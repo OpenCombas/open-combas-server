@@ -263,6 +263,13 @@ type RankEntry struct {
 	TeamID string
 	Name   string
 	Value  int32
+	// Nation is the squad's faction as the wire expects it: 'A' | 'B' | 'C' (the same code the 184 login
+	// record calls Country Code). The ranking block carries one per entry and the client renders it as the
+	// nation icon; the A/B/C ordering matches icon_Nation1/2/3.
+	Nation byte
+	// Grade is the squad grade index rendered as FMG string 5700+Grade, one per ranking entry -- the same
+	// derivation the squad panel uses (see squadGrade.go).
+	Grade byte
 }
 
 // RankSquads returns every squad ranked descending by the requested stat. kbn: 1=Renown,
@@ -310,7 +317,19 @@ func (r *SquadRepository) RankSquads(ctx context.Context, kbn int, useSeason boo
 		default: // 1 = Renown
 			val = renown
 		}
-		entries = append(entries, RankEntry{TeamID: sq.TeamID, Name: sq.Name, Value: val})
+		nation := byte('A')
+		if len(sq.Faction) > 0 && sq.Faction[0] >= 'A' && sq.Faction[0] <= 'C' {
+			nation = sq.Faction[0]
+		}
+		entries = append(entries, RankEntry{
+			TeamID: sq.TeamID,
+			Name:   sq.Name,
+			Value:  val,
+			Nation: nation,
+			// Derived from lifetime renown rather than the stored Squad.Grade so the board agrees with the
+			// squad panel even when a battle credit landed without a RefreshSquadGrade.
+			Grade: gradeFromRenown(st.Renown.Total),
+		})
 	}
 	sort.SliceStable(entries, func(i, j int) bool { return entries[i].Value > entries[j].Value })
 	return entries, nil
