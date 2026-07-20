@@ -69,7 +69,7 @@ func TestBuildHistoryResponseFramingAndTerminator(t *testing.T) {
 	if buf[constants.MinHelloMessageSize] != 0 {
 		t.Errorf("status byte = %d, want 0", buf[constants.MinHelloMessageSize])
 	}
-	recBase := constants.MinHelloMessageSize + 1
+	recBase := constants.MinHelloMessageSize + constants.SquadHistoryRecordBase
 	rec := func(i int) []byte {
 		off := recBase + i*constants.SquadHistoryRecordSize
 		return buf[off : off+constants.SquadHistoryRecordSize]
@@ -91,7 +91,7 @@ func TestBuildHistoryResponseEmptyIsLoneTerminator(t *testing.T) {
 	if buf[constants.MinHelloMessageSize] != 0 {
 		t.Errorf("status = %d, want 0", buf[constants.MinHelloMessageSize])
 	}
-	recBase := constants.MinHelloMessageSize + 1
+	recBase := constants.MinHelloMessageSize + constants.SquadHistoryRecordBase
 	if got := binary.LittleEndian.Uint16(buf[recBase : recBase+2]); got != historyTypeTerminator {
 		t.Errorf("first record type = %d, want 0 (empty history = lone terminator)", got)
 	}
@@ -132,5 +132,46 @@ func TestHistoryRecordByteOrderIsLittleEndian(t *testing.T) {
 	// on the wire byte level.
 	if rec[0] == 0 {
 		t.Error("rec[0] == 0 on a populated record: type id landed in the high byte (big-endian regression)")
+	}
+}
+
+// TestBuildHistoryResponseRecordBase pins the two-byte gap between the status byte and record 0.
+//
+// The client sets its record base to `status + 2` and scans terminators at `status + 2 + 134*i`
+// (sub_821C8F20: `a1[46] = a2 + 2`). Packing records at status + 1 shifted every field by a byte and
+// produced a History screen of empty bars: the type u16 straddled year and read non-zero, so rows were
+// drawn, but no content case matched. This asserts the gap byte is present AND zero, and that record 0's
+// type lands exactly where the client looks for it.
+func TestBuildHistoryResponseRecordBase(t *testing.T) {
+	buf := buildHistoryResponse(UserHelloMessage{}, []SquadHistoryEvent{
+		{Type: historyTypeJoined, CreatedAt: historyTestTs, Name: "Pilot-01"},
+	})
+
+	if len(buf) != constants.SquadHistoryResponseSize {
+		t.Fatalf("response size = %d, want %d", len(buf), constants.SquadHistoryResponseSize)
+	}
+	if buf[constants.MinHelloMessageSize] != 0 {
+		t.Errorf("status byte = %d, want 0", buf[constants.MinHelloMessageSize])
+	}
+	// The pad byte between status and record 0 must be zero: the client never reads it, but a stray value
+	// here would be indistinguishable from a framing change if this ever regresses.
+	if buf[constants.MinHelloMessageSize+1] != 0 {
+		t.Errorf("pad byte = %d, want 0", buf[constants.MinHelloMessageSize+1])
+	}
+
+	base := constants.MinHelloMessageSize + constants.SquadHistoryRecordBase
+	if got := binary.LittleEndian.Uint16(buf[base : base+2]); got != historyTypeJoined {
+		t.Errorf("record 0 type at status+2 = %d, want %d", got, historyTypeJoined)
+	}
+	// The date bytes must follow immediately, in SYSTEMTIME order (month, day, hour, minute, second).
+	tm := time.Unix(historyTestTs, 0).UTC()
+	if buf[base+4] != byte(tm.Month()) {
+		t.Errorf("month at +4 = %d, want %d", buf[base+4], byte(tm.Month()))
+	}
+	if buf[base+5] != byte(tm.Day()) {
+		t.Errorf("day at +5 = %d, want %d", buf[base+5], byte(tm.Day()))
+	}
+	if buf[base+6] != byte(tm.Hour()) {
+		t.Errorf("hour at +6 = %d, want %d", buf[base+6], byte(tm.Hour()))
 	}
 }

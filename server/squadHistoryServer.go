@@ -106,7 +106,13 @@ func buildHistoryResponse(hi UserHelloMessage, evs []SquadHistoryEvent) []byte {
 	}
 	buf[constants.MinHelloMessageSize] = 0 // status: 0 = OK
 
-	recBase := constants.MinHelloMessageSize + 1
+	// Records start TWO bytes after the status byte, not one. The client sets its record base to
+	// `status + 2` and scans terminators at `status + 2 + 134*i` (sub_821C8F20). Using +1 shifted every
+	// record by a byte, which is what produced the "bars with no content" History screen: the type u16
+	// straddled the year field and read non-zero (so a row was drawn) but matched no content case, and the
+	// date rendered as 20/20/99 31:38:50 -- month<-day, day<-hour, hour<-minute, minute<-second, and the
+	// "seconds" was the ASCII digit of the grade index at +9.
+	recBase := constants.MinHelloMessageSize + constants.SquadHistoryRecordBase
 	for i, ev := range evs {
 		if i >= constants.SquadHistoryMaxRecords {
 			break
