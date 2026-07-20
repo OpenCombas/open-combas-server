@@ -970,8 +970,10 @@ func (r NationRecord) toNationData() NationData {
 		MaintenanceBudget: r.MaintenanceBudget,
 		MilitaryBudget:    r.MilitaryBudget,
 		PriceIndex:        r.PriceIndex,
-		PresidentID:       byte(r.PresidentID),
-		Unknown57:         byte(r.Unknown57),
-		DeadFlag:          byte(r.DeadFlag),
+		// Clamped to the nation's own block of the president table: docs seeded before that mapping was
+		// known hold 1/2/3, which renders every nation's leader as a Tarakian. See clampPresidentID.
+		PresidentID: clampPresidentID(code, byte(r.PresidentID)),
+		Unknown57:   byte(r.Unknown57),
+		DeadFlag:    byte(r.DeadFlag),
 	}
 }

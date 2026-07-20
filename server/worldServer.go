@@ -27,11 +27,11 @@ import (
 // NationData is one faction record (60 bytes). Wire format string "C,I2,C,I5,S,I4,C3".
 // Labels confirmed in-game from the "Select Allegiance" / faction-detail screens.
 type NationData struct {
-	CountryCode       byte    // off 0  - 'A'/'B'/'C' = Tarakia/Morskoj/Sal Kar (flag/name/description)
-	_                 [3]byte // align
-	TotalIncome       int32   // off 4  - "Total Revenue"
-	FixedIncome       int32   // off 8  - (not shown on faction screen; economic input)
-	NumberOfAreas     byte    // off 12 - client renders "Control %" as this / total areas (~22). We now
+	CountryCode   byte    // off 0  - 'A'/'B'/'C' = Tarakia/Morskoj/Sal Kar (flag/name/description)
+	_             [3]byte // align
+	TotalIncome   int32   // off 4  - "Total Revenue"
+	FixedIncome   int32   // off 8  - (not shown on faction screen; economic input)
+	NumberOfAreas byte    // off 12 - client renders "Control %" as this / total areas (~22). We now
 	//                          populate it with the nation's share of the map's total occupation points
 	//                          (StrategicValue-weighted, scaled onto /22) -- see controlAreasFromBattlefields.
 	_                 [3]byte // align
@@ -83,6 +83,57 @@ func worldHeaderNow() WorldHeader {
 	}
 }
 
+// PRESIDENT TABLE. PresidentID is a KEY into the table the client loads from
+// menu/WorldSituationInfoNewsPresidentParam.bin -- not an index, and not per-nation-relative. The client
+// looks it up by linear scan (sub_822A1D20) and reports "PRESIDENT ID (%u) : INVALID PARAMETER" on a miss.
+//
+// That file defines 35 presidents in three contiguous per-nation blocks, each record mapping the key to an
+// FMG string id:
+//
+//	ids  1..13 -> FMG 8200..8212  Tarakia            (Glen Conrad, ...)
+//	ids 14..25 -> FMG 8400..8411  Rep. of Morskoj    (Viktor Barsukov, ...)
+//	ids 26..35 -> FMG 8600..8609  Sal Kar            (Asad Aslan, ...)
+//
+// The blocks are 13/12/10 -- deliberately unequal, so there is no stride to compute one from. Serving
+// 1/2/3 for the three nations (the old placeholder) put every nation inside TARAKIA's block, which is why
+// all three displayed Tarakian presidents.
+const (
+	presidentTarakiaFirst = 1
+	presidentTarakiaLast  = 13
+	presidentMorskojFirst = 14
+	presidentMorskojLast  = 25
+	presidentSalKarFirst  = 26
+	presidentSalKarLast   = 35
+)
+
+// presidentRangeFor returns the valid president-key range for a nation's country code.
+func presidentRangeFor(code byte) (first, last byte, ok bool) {
+	switch code {
+	case 'A':
+		return presidentTarakiaFirst, presidentTarakiaLast, true
+	case 'B':
+		return presidentMorskojFirst, presidentMorskojLast, true
+	case 'C':
+		return presidentSalKarFirst, presidentSalKarLast, true
+	}
+	return 0, 0, false
+}
+
+// clampPresidentID keeps a stored president key inside its own nation's block. Persisted nation docs seeded
+// before this mapping was known hold 1/2/3, which renders as three Tarakian presidents rather than failing
+// visibly -- so an out-of-block value is corrected to the nation's first president instead of being served.
+// An unknown country code is passed through unchanged; there is nothing better to map it to.
+func clampPresidentID(code byte, id byte) byte {
+	first, last, ok := presidentRangeFor(code)
+	if !ok {
+		return id
+	}
+	if id < first || id > last {
+		return first
+	}
+	return id
+}
+
 // defaultNations is the static faction model. It is both the fallback when Mongo is unavailable and the
 // seed source for the `nations` collection (see seedNations).
 func defaultNations() [3]NationData {
@@ -107,11 +158,12 @@ func defaultNations() [3]NationData {
 		}
 	}
 	return [3]NationData{
-		// presidentID is a placeholder index per nation (Tarakia's #1 = "Glen Conrad");
-		// the correct per-nation IDs are tunable.
-		mkNation('A', 1, 1_000_000, 5_000, 120), // Tarakia
-		mkNation('B', 2, 900_000, 4_500, 100),   // Morskoj
-		mkNation('C', 3, 1_100_000, 5_500, 140), // Sal Kar
+		// Each nation's FIRST president, from its own block of the president table (see the block map
+		// above). These are the only three values that are correct-by-construction; any other choice must
+		// stay inside the nation's range or the client renders another nation's leader.
+		mkNation('A', presidentTarakiaFirst, 1_000_000, 5_000, 120), // Tarakia -> "Glen Conrad"
+		mkNation('B', presidentMorskojFirst, 900_000, 4_500, 100),   // Morskoj -> "Viktor Barsukov"
+		mkNation('C', presidentSalKarFirst, 1_100_000, 5_500, 140),  // Sal Kar -> "Asad Aslan"
 	}
 }
 

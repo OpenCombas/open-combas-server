@@ -115,35 +115,31 @@ func clampSquadGrade(g int32) byte {
 	return byte(g)
 }
 
-// clampByte saturates a stat into the single byte the wire field provides. Capture points are an int32 in
-// the database but only a byte in the team header, so a squad past 255 shows 255 rather than wrapping to a
-// small number -- a pegged counter reads as "very high", a wrapped one reads as a plausible lie.
-func clampByte(v int32) byte {
-	if v < 0 {
-		return 0
-	}
-	if v > 255 {
-		return 255
-	}
-	return byte(v)
-}
-
 // SquadTeamInfo is the 92-byte team header. Wire schema "C20, I11, C20, I2".
 type SquadTeamInfo struct {
 	Status      byte     // off 0  - 0 = valid team; non-zero => record zeroed ("no team")
 	TeamName    [16]byte // off 1  - Team Name
 	CountryCode byte     // off 17 - Country Code ('A' Tarakia / 'B' Morskoj / 'C' Sal Kar)
-	// off 18 - CAPTURE POINTS, not the member count. Release.xex sub_821AF778 passes *(u8*)(hdr+18) to
-	// sub_821AEA50, which resolves the lobby widget by the literal name "string_Capture". The old
-	// "Number Of Member" name came from an empirically-reversed field list, not from the binary, and it
-	// caused the lobby to render the roster size in the Capture row. Single byte, so values saturate at 255.
-	CapturePoints byte // off 18
+	// off 18 - MEMBER COUNT. This byte has TWO consumers and they disagree about what it means:
+	//   * the session/roster view renders it as the member count (measured in-game 2026-07-20: serving
+	//     capture points here displayed "255 members")
+	//   * Release.xex sub_821AF778 passes *(u8*)(hdr+18) to sub_821AEA50, which resolves its widget by the
+	//     literal name "string_Capture"
+	// Both readings are evidenced, so ONE of them is not actually reading this struct -- most likely
+	// sub_821AF778 operates on a differently-sourced team record (ranking/search entry) that shares the
+	// first 20 bytes, which would also explain why the grade fix at +19 worked. UNRESOLVED; serving the
+	// member count because that consumer is confirmed by observed behaviour. Do not "fix" this to capture
+	// points again without first establishing which record sub_821AF778 is handed -- see xrefs to it.
+	MemberCount byte // off 18
 	// off 19 - SQUAD GRADE index. Not padding: the squad panel reads this byte and renders FMG string
 	// 5700+idx (Release.xex sub_821AF778 passes *(u8*)(hdr+19) to sub_821ADF48, which does
 	// sub_82153738(idx + 5700)). Valid grades are 1..13 -> "Rookie".."". Index 0 resolves to FMG 5700,
 	// which is the panel's own LABEL string, so a zero here renders as "Squad Grade    Squad Grade".
-	// The same +19/+18/+20 offsets in that function match MemberCount and TeamRank, confirming alignment.
-	Grade       byte    // off 19 (end of C20)
+	// Grade is the one field in that function confirmed against THIS struct by in-game behaviour: the
+	// lobby rendered "Squad Grade  Squad Grade" until +19 was populated. The +18 reading from the same
+	// function does NOT hold here (see MemberCount above), so do not treat sub_821AF778 as a blanket
+	// authority on this layout.
+	Grade byte // off 19 (end of C20)
 	// off 20 - RENOWN, not the team rank. sub_821AF778 passes *(i32*)(hdr+20) to sub_821AEAE8, which
 	// resolves its widget by the literal name "string_Renown". Serving squad.Rank here is what made the
 	// lobby show "Renown 1" for a squad with 444 lifetime renown, while the 202 ranking view -- which
@@ -259,9 +255,9 @@ func CreateSquadLoginState(hi UserHelloMessage, packet []byte) SquadLoginState {
 	copy(t.TeamName[:], "OpenCombas")
 	t.CountryCode = 'B'
 	t.TeamInfoCount = 1 // static record: fixed serial (no persistence to bump)
-	// A squad that exists only as this fallback has no stats doc, so both lobby counters are genuinely
-	// zero. Writing 1 here (the old MemberCount/TeamRank values) rendered as "Capture 1 / Renown 1".
-	t.CapturePoints = 0
+	t.MemberCount = 1
+	// The fallback squad has no stats doc, so renown is genuinely 0. Serving squad.Rank here is what made
+	// the lobby render "Renown 1".
 	t.Renown = 0
 	t.Grade = squadGradeMin
 	t.Language = 'J'
@@ -293,10 +289,11 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad, stats *SquadSta
 	} else {
 		t.CountryCode = 'A'
 	}
-	// Lobby counters (off 18 / off 20). Both come from lifetime stats, NOT from the roster or the ranking
-	// position -- see the field comments on SquadTeamInfo for the disassembly that pins them.
+	// Lobby Renown (off 20) comes from lifetime stats, NOT the ranking position -- sub_821AF778 passes
+	// hdr+20 to a widget resolved as "string_Renown". Verified in-game 2026-07-20: a squad with 444
+	// lifetime renown now reads "Renown 444" where it previously read "Renown 1" (its rank).
+	// Capture points are NOT served here; off 18 is the member count, see SquadTeamInfo.
 	if stats != nil {
-		t.CapturePoints = clampByte(stats.CapturePoints.Total)
 		t.Renown = stats.Renown.Total
 	}
 	t.Grade = clampSquadGrade(squad.Grade)
@@ -338,9 +335,7 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad, stats *SquadSta
 	if n > len(state.Data.Members) {
 		n = len(state.Data.Members) // wire holds 20 members
 	}
-	// NOTE: the roster size is deliberately NOT written to the team header. Offset 18 is the lobby's
-	// Capture counter (see SquadTeamInfo); the client derives the member count from the roster array
-	// itself. Writing n here is what previously rendered as "Capture <member count>".
+	t.MemberCount = byte(n)
 	// Per-SQUAD update serial (bumped only on real squad mutations; see Squad.UpdateSeq). The client
 	// (Release.xex sub_823C0ED8) accepts + peer-rebroadcasts the roster only when this EXCEEDS the value it
 	// cached, so a genuine change (join/leave/config) reads "VALID" and propagates, while a stable re-login
