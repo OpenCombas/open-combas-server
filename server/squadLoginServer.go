@@ -8,34 +8,12 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
-
-// sharedUSTest is a TEMPORARY DIAGNOSTIC toggle (env SHARED_US_TEST=1, default off).
-//
-// It reproduces the pre-32d7cad wire behaviour by sending the Live gamertag as the member "UserName"
-// instead of the in-squad pilot name. That breaks a joining console's self-match against its own roster
-// record, so instead of deriving its OWN assigned US the title falls back to adopting the LEADER's US --
-// the historical state where both consoles' saves stored a single shared US (confirmed 2026-07-07:
-// US0001000000000001 on both). We are reproducing that configuration deliberately because squad joins
-// were reported working in it, to compare which link-layer mechanisms progress.
-//
-// This is a KNOWN REGRESSION of the joiner's own-US derivation, not a fix. It must never be enabled
-// outside a controlled diagnostic capture.
-var sharedUSTest = os.Getenv("SHARED_US_TEST") == "1"
-
-func init() {
-	if sharedUSTest {
-		logging.Warn.Printf("SHARED_US_TEST=1 -- squad login is sending the GAMERTAG as member UserName. " +
-			"This deliberately breaks a joiner's own-US derivation so it adopts the LEADER's US " +
-			"(pre-32d7cad behaviour). DIAGNOSTIC ONLY -- do not leave enabled.")
-	}
-}
 
 // Squad login / squad-data fetch response.
 //
@@ -284,9 +262,8 @@ func squadLoginStateFromSquad(hi UserHelloMessage, squad *Squad) SquadLoginState
 		// Live gamertag: the host mis-sources the 182 gamertag from the squad lead, so a gamertag-keyed
 		// name breaks the joiner's self-match -> null US/TM -> lobby merge never commits. Fall back to the
 		// gamertag only when Name is empty (e.g. the leader, whose reg-supplied pilot name isn't persisted).
-		// SHARED_US_TEST=1 forces the gamertag here on purpose -- see sharedUSTest. Off by default.
 		name := rec.Name
-		if name == "" || sharedUSTest {
+		if name == "" {
 			name = rec.Gamertag
 		}
 		copy(m.UserName[:], name)

@@ -111,20 +111,36 @@ func (s *squadJoinServer) buildJoin(hi UserHelloMessage, packet []byte) SquadJoi
 		return CreateSquadJoinState(hi.Xuid, hi.Order)
 	}
 
-	// Return the JOINER's freshly-assigned User ID -- the title contract. The host copies the 182 reply US
-	// into its own myIdentity (+2668) AND uses that same +2668 as the source for the joiner's US slot in the
-	// P2P 0x400B squad-data packet it sends the joiner (US@+0x3C), so the joiner adopts whatever US we return
-	// here. Returning the joiner's US therefore delivers the joiner its OWN US end-to-end.
+	// ⚠ TEMPORARY DIAGNOSTIC -- FIX #1 DELIBERATELY RE-APPLIED (reinstates the pre-8ff25d4 behaviour).
 	//
-	// [Fix #1 reverted 2026-07-08.] Fix #1 echoed the REQUESTER's (host's) US here to avoid the 182 reply
-	// "clobbering" the host's myIdentity, but the RE session traced +2668's lifetime and showed that clobber
-	// is HARMLESS: the host's leader/lobby identity reads profile.US / SquadState+56 (set at login), and the
-	// +2668->profile mirror (sub_8234C8C8) only fires at reg/login (mgr[189]==3), never during a join
-	// (mgr[189]==5). So fix #1 fixed nothing on the host and instead made the host emit US...0001 in 0x400B,
-	// causing the joiner to adopt the leader's US. "Host can't disband" has a separate root (suspect the
-	// login roster UserName=rec.Name). See xex_re.md "INTERPRETATION".
-	logging.Info.Printf("[%s] join %s (joiner %s) -> squad %s: status %q userID %q", s.serverConfig.Label, gamertag, joinerXUID, teamID, status, userID)
-	return squadJoinState(hi.Xuid, hi.Order, status, userID)
+	// Echo the REQUESTER's (packet-header XUID = the HOST's) OWN User ID instead of the joiner's freshly
+	// minted one. Consequence chain, which is the POINT of this diagnostic: the host copies the 182 reply US
+	// into its own myIdentity (+2668) -- here a no-op, it re-writes its own id -- and then uses that same
+	// +2668 as the source for the joiner's US slot in the P2P 0x400B it sends the joiner (US@+0x3C). So the
+	// joiner adopts the HOST's US and BOTH CONSOLES END UP SHARING ONE US.
+	//
+	// We are reproducing that state on purpose: it is the configuration in which parallel lobbies were
+	// reported eliminated (operator recollection, corroborated by 32d7cad's RemoveMember comment -- "a joiner
+	// commonly carries the LEADER's US in its own myIdentity", confirmed 2026-07-07 with both consoles'
+	// saves storing US0001000000000001). We want the wire flow of a converging lobby merge to compare
+	// against the current failure.
+	//
+	// KNOWN COST, accepted for the duration of this experiment: with the joiner carrying the leader's US,
+	// a 183 withdraw body points at the LEADER, which wedges on the leader-with-members guard -- i.e. this
+	// re-breaks leaving a squad. RemoveMember resolves by header XUID first (32d7cad) which mitigates it,
+	// but do not treat withdraw as trustworthy while this is applied. REVERT once the successful-join shape
+	// is understood; see 8ff25d4 for the revert this undoes.
+	replyUserID := userID
+	if status == '1' {
+		if p, perr := s.repo.ProfileByXUID(readCtx, string(hi.Xuid[:])); perr != nil {
+			logging.Warn.Printf("[%s] join: could not resolve requester %s profile, echoing joiner US: %v", s.serverConfig.Label, string(hi.Xuid[:]), perr)
+		} else if p != nil && p.UserID != "" {
+			replyUserID = p.UserID
+		}
+	}
+	logging.Warn.Printf("[%s] FIX#1-DIAGNOSTIC join %s (joiner %s) -> squad %s: status %q joinerUserID %q replyUserID(requester/HOST) %q -- joiner will adopt the host US",
+		s.serverConfig.Label, gamertag, joinerXUID, teamID, status, userID, replyUserID)
+	return squadJoinState(hi.Xuid, hi.Order, status, replyUserID)
 }
 
 func NewSquadJoinServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *SquadRepository) *squadJoinServer {
