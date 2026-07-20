@@ -126,9 +126,18 @@ func (s *squadJoinServer) buildJoin(hi UserHelloMessage, packet []byte) SquadJoi
 	//
 	// [Fix #1 RE-TESTED 2026-07-19 -- NEGATIVE, do not try again.] Temporarily re-applied to reproduce the
 	// "shared US" state (joiner adopts the host US) on a recollection that parallel lobbies were once absent
-	// in that configuration. They were not: the lobby merge failed identically. Searching memory, git history
-	// and every capture also found NO record of a fully successful join in any past configuration -- every
-	// historical "success" is data-layer only. See workspace squad_join_consolidated.md.
+	// in that configuration. They were not: the lobby merge failed identically.
+	//
+	// [CORRECTION 2026-07-20.] An earlier revision of this comment claimed no fully successful join existed in
+	// any capture. That was wrong -- it came from summarising a two-join capture with `tail`, which showed only
+	// the second (failed) join. The first held for 80s. That pair is now the primary evidence for the join
+	// timing model. See workspace squad_join_consolidated.md.
+
+	// The joiner is about to tear down its applicant session and reconnect as a squad member, racing the
+	// host's stale-entry retirement. Flag them so their imminent 184 login reply is held long enough for the
+	// host to retire the old entry first; see buildLogin in squadLoginServer.go for the full derivation.
+	pendingMemberReconnects.Mark(joinerXUID)
+
 	logging.Info.Printf("[%s] join %s (joiner %s) -> squad %s: status %q userID %q", s.serverConfig.Label, gamertag, joinerXUID, teamID, status, userID)
 	return squadJoinState(hi.Xuid, hi.Order, status, userID)
 }

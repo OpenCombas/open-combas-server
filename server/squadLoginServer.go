@@ -8,12 +8,49 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
+
+// memberLoginStallDefault pads the joiner's applicant-teardown -> member-reconnect gap past the host's
+// ~10s user-retirement timeout. See the block in buildLogin for the full derivation.
+//
+// 8s is the measured-good value: the un-stalled gap is ~5.1s, and 8s produced 13.2s end-to-end, clearing
+// the 10s deadline with ~3.2s of margin. Do not trim it below ~5s -- that removes the margin entirely.
+const memberLoginStallDefault = 8 * time.Second
+
+// memberLoginStall is ON by construction. Set SQUAD_MEMBER_LOGIN_STALL_MS=0 to force it off for a clean
+// baseline capture; that direction is safe because a baseline that silently kept the stall is obvious in
+// the timings. Any other value overrides the default.
+var memberLoginStall = func() time.Duration {
+	raw, ok := os.LookupEnv("SQUAD_MEMBER_LOGIN_STALL_MS")
+	if !ok {
+		return memberLoginStallDefault
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return memberLoginStallDefault
+	}
+	return time.Duration(ms) * time.Millisecond
+}()
+
+func init() {
+	// Logged unconditionally, both states: an absent line must never be ambiguous between "disabled" and
+	// "this build predates the change".
+	if memberLoginStall > 0 {
+		logging.Warn.Printf("squad member login stall ACTIVE (%v) -- the 184 reply to a member who just "+
+			"joined via 182 is held once, to outlast the host's ~10s stale-member retirement. Normal logins "+
+			"are unaffected. Timing-coupled workaround, see buildLogin.", memberLoginStall)
+	} else {
+		logging.Warn.Printf("squad member login stall DISABLED via SQUAD_MEMBER_LOGIN_STALL_MS=0 -- " +
+			"squad joins are expected to fail with the joiner falling back to the title screen.")
+	}
+}
 
 // Squad login / squad-data fetch response.
 //
@@ -326,7 +363,63 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 		return noTeamLoginState(hi)
 	}
 
+	// Hold a NON-LEADER member's 184 reply so their squad-member reconnect lands after the host has retired
+	// their stale applicant entry. Timing-coupled by nature -- read this before changing it.
+	//
+	// MECHANISM. A squad join tears down the applicant P2P session and reconnects as a member (by design;
+	// the 0x400B handler's SetState(13) drives it). On that reconnect the host allocates a slot but binds no
+	// user while the applicant's entry is still in its table -- duplicate suppression skips `Add User`, which
+	// gates the type-07 announce the joiner's link state 6 blocks on. The joiner times out 6->8 and drops to
+	// the title screen. Un-stalled the reconnect arrives ~5.1s after the teardown; the host retires the stale
+	// entry ~10s after it, so the reconnect is always too early.
+	//
+	// WHY 10s IS NOT NEGOTIABLE. It is a hard-coded title literal: CDataSegmentRecvWorker (sub_82823990)
+	// accumulates elapsed ms whenever the peer socket returns <= 0 and retires the connection at 0x2710
+	// (10,000ms). EOF and WOULDBLOCK take the same branch, so a promptly-delivered close does not shorten it
+	// -- measured at 9,765 / 9,961 / 10,011 / 9,818 ms across four captures. Only a genuine socket error
+	// bypasses the accumulator, and the joiner's teardown is a graceful shutdown()+closesocket() with its
+	// receive buffer fully drained (undrained=0B, measured), so reporting an error would fabricate a
+	// condition TCP would not produce.
+	//
+	// WHY NOT RETIRE THE ENTRY SOONER. In this flow the host has exactly one applicable retirement path --
+	// ClientDropped on that accumulator. Its other callers are send-failure (the host goes quiet, so
+	// unreachable) and two paths gated behind XSessionArbitrationRegister, which does not run during a squad
+	// join. No P2P message outside arbitration retires a user.
+	//
+	// COST AND FAILURE MODE. Adds ~8s to every squad join, and slow session-membership updates are a known
+	// bug source here (stale advertised sessions, duplicate lobbies). If the title's 10s constant or the
+	// joiner's reconnect timing ever shifts, this fails SILENTLY and looks exactly like the original bug --
+	// joiner kicked to the title screen. If that reappears, re-derive the gap before suspecting anything else.
+	//
+	// SCOPE. Only users flagged by a preceding 182 join are stalled, and only once (the marker is consumed).
+	// A member signing in normally -- cold boot, no join in flight -- has no stale applicant entry on any host
+	// and must not pay the latency. Leader is excluded on top of that: the host also issues a 184 inside its
+	// own join-commit sequence (0x4008 -> 182 -> 184 -> 0x7001 -> 0x400b), and stalling that would stall the
+	// join itself.
+	if memberLoginStall > 0 {
+		xuid := string(hi.Xuid[:])
+		if m := memberByXUID(squad, xuid); m != nil && !m.Leader && pendingMemberReconnects.Consume(xuid) {
+			logging.Info.Printf("[%s] holding 184 reply for freshly-joined member %s (%s) by %v to outlast host stale-member retirement",
+				s.serverConfig.Label, m.Gamertag, teamID, memberLoginStall)
+			select {
+			case <-time.After(memberLoginStall):
+			case <-s.ctx.Done():
+			}
+		}
+	}
+
 	return squadLoginStateFromSquad(hi, squad)
+}
+
+// memberByXUID finds a roster entry by the packet-header XUID (the reliable identity of the caller; the
+// body gamertag is not, which is why the roster is keyed on XUID here).
+func memberByXUID(squad *Squad, xuid string) *SquadMemberRecord {
+	for i := range squad.Members {
+		if squad.Members[i].XUID == xuid {
+			return &squad.Members[i]
+		}
+	}
+	return nil
 }
 
 func NewSquadLoginServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *SquadRepository) *squadLoginServer {
