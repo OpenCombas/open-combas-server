@@ -8,33 +8,12 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
-
-// joinerLoginDelay is a TEMPORARY DIAGNOSTIC (env JOINER_LOGIN_DELAY_MS, default 0 = off).
-// See the block in buildLogin for what it does and why it must never ship enabled.
-var joinerLoginDelay = func() time.Duration {
-	ms, err := strconv.Atoi(os.Getenv("JOINER_LOGIN_DELAY_MS"))
-	if err != nil || ms <= 0 {
-		return 0
-	}
-	return time.Duration(ms) * time.Millisecond
-}()
-
-func init() {
-	if joinerLoginDelay > 0 {
-		logging.Warn.Printf("JOINER_LOGIN_DELAY_MS=%v -- squad login (184) replies to NON-LEADER members are "+
-			"deliberately stalled. DIAGNOSTIC ONLY: this pads the applicant-teardown -> member-reconnect gap "+
-			"to test whether the host retires the stale user first. It makes the server SLOWER and must not "+
-			"ship enabled.", joinerLoginDelay)
-	}
-}
 
 // Squad login / squad-data fetch response.
 //
@@ -347,48 +326,7 @@ func (s *squadLoginServer) buildLogin(hi UserHelloMessage, packet []byte) SquadL
 		return noTeamLoginState(hi)
 	}
 
-	// ⚠ TEMPORARY DIAGNOSTIC (env JOINER_LOGIN_DELAY_MS, default 0 = off). NOT A FIX -- see below.
-	//
-	// Delays ONLY a non-leader member's 184 login reply. The joiner performs this login immediately before
-	// reconnecting as a squad member, so stalling it pushes the member reconnect later in wall-clock time.
-	//
-	// PURPOSE: confirm the causal chain end-to-end. `watchpoints_4` contains a matched pair -- join #1
-	// SUCCEEDED with a 13,835ms teardown->reconnect gap, join #2 FAILED at 5,085ms -- against the host's
-	// ~10s ClientDropped timeout. The model says the success occurred purely because the host had already
-	// retired the applicant's user entry before the member reconnect was accepted. If padding this gap past
-	// ~10s reproduces a held session, the model is confirmed by construction rather than by observation of
-	// an accident.
-	//
-	// WHY THIS MUST NOT SHIP: it makes the server slower, and slow session-membership updates are already a
-	// known source of real bugs here (players joining sessions the backend still advertises after the host
-	// left; duplicate/parallel sessions). The correct direction is to make the host retire the stale member
-	// FASTER, not to make the joiner return LATER. This exists to prove the mechanism, then comes straight
-	// back out.
-	//
-	// Leader is excluded deliberately: the HOST also issues a 184 inside its join-commit sequence
-	// (0x4008 -> 182 -> 184 -> 0x7001 -> 0x400b), and delaying that would stall the join itself.
-	if joinerLoginDelay > 0 {
-		if m := memberByXUID(squad, string(hi.Xuid[:])); m != nil && !m.Leader {
-			logging.Warn.Printf("[%s] JOINER_LOGIN_DELAY_MS diagnostic: stalling 184 reply for non-leader %s (%s) by %v",
-				s.serverConfig.Label, m.Gamertag, teamID, joinerLoginDelay)
-			select {
-			case <-time.After(joinerLoginDelay):
-			case <-s.ctx.Done():
-			}
-		}
-	}
-
 	return squadLoginStateFromSquad(hi, squad)
-}
-
-// memberByXUID finds a roster entry by the packet-header XUID (the reliable identity of the caller).
-func memberByXUID(squad *Squad, xuid string) *SquadMemberRecord {
-	for i := range squad.Members {
-		if squad.Members[i].XUID == xuid {
-			return &squad.Members[i]
-		}
-	}
-	return nil
 }
 
 func NewSquadLoginServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, repo *SquadRepository) *squadLoginServer {
