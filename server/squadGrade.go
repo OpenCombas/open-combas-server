@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -106,4 +107,81 @@ func (r *SquadRepository) RefreshSquadGrade(ctx context.Context, teamID string) 
 	}
 	// Zero time -> RecordSquadHistory stamps it with now (see stamp/RecordSquadHistory).
 	return grade, r.RecordSquadGrade(ctx, teamID, int32(grade), grade > old, time.Time{})
+}
+
+// GradeBackfillReport summarises a BackfillSquadGrades run.
+type GradeBackfillReport struct {
+	Applied bool
+	Scanned int
+	Changes []string // human-readable "TM... 'Name': grade 1 -> 7 (renown 4210)"
+}
+
+// BackfillSquadGrades syncs every squad's STORED grade with the value derived from its lifetime renown,
+// deliberately WITHOUT recording a history event.
+//
+// WHY THIS EXISTS. Nothing renders the stored grade -- both the squad panel and the ranking board derive it
+// at read time -- so grades are already correct without any migration. The stored copy has exactly one
+// consumer: the `old != new` comparison in RefreshSquadGrade that decides whether to record a grade-change
+// history event.
+//
+// That makes an unset/stale stored grade a LATENT FALSE EVENT rather than a display bug. clampSquadGrade(0)
+// reads as grade 1, so the first battle credit after deploy compares 1 against the squad's real grade and
+// writes "grade has gone up to 7" into its history -- a promotion that never happened, for a squad that may
+// have held grade 7 for weeks. One per squad, once, and only for squads that fight, which is exactly the
+// kind of small persistent lie that is hard to notice and impossible to distinguish later from a real
+// promotion.
+//
+// Running this before the new binary starts crediting battles absorbs the discrepancy silently. It is
+// idempotent: a second run reports zero changes.
+func (r *SquadRepository) BackfillSquadGrades(ctx context.Context, apply bool) (GradeBackfillReport, error) {
+	report := GradeBackfillReport{Applied: apply}
+
+	var squads []Squad
+	cur, err := r.squads.Find(ctx, bson.M{})
+	if err != nil {
+		return report, err
+	}
+	if err := cur.All(ctx, &squads); err != nil {
+		return report, err
+	}
+
+	// One read of the whole stats collection rather than a lookup per squad: this runs against every squad
+	// in the database, and the per-squad form would be N round-trips for no benefit.
+	var stats []SquadStats
+	scur, err := r.stats.Find(ctx, bson.M{})
+	if err != nil {
+		return report, err
+	}
+	if err := scur.All(ctx, &stats); err != nil {
+		return report, err
+	}
+	renownByTeam := make(map[string]int32, len(stats))
+	for _, s := range stats {
+		renownByTeam[s.TeamID] = s.Renown.Total
+	}
+
+	for _, sq := range squads {
+		report.Scanned++
+		renown := renownByTeam[sq.TeamID] // absent stats doc -> 0 -> squadGradeMin, which is correct
+		want := gradeFromRenown(renown)
+		have := clampSquadGrade(sq.Grade)
+		if have == want {
+			continue
+		}
+		report.Changes = append(report.Changes,
+			fmt.Sprintf("%s %q: stored grade %d -> %d (lifetime renown %d)", sq.TeamID, sq.Name, have, want, renown))
+
+		if !apply {
+			continue
+		}
+		// No bumpSeq here. UpdateSeq drives the client's roster re-accept; a grade correction is not a
+		// roster change, and bumping it would make every squad re-propagate on next login for nothing.
+		if _, err := r.squads.UpdateOne(ctx,
+			bson.M{"teamId": sq.TeamID},
+			bson.M{"$set": bson.M{"grade": int32(want)}},
+		); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
 }

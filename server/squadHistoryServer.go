@@ -45,13 +45,24 @@ import (
 // caps at 10. We send 10 fixed slots with zero-filled (type-0) tails, which is safe for <10 events and
 // relies on the 10-cap when exactly full; and the +105/+108 area-vs-map arg order for type 6/7.
 
-// historyRecord packs one event into its 134-byte big-endian wire record.
+// historyRecord packs one event into its 134-byte wire record.
+//
+// ENDIANNESS. The two u16 fields are LITTLE-endian, like every other combas reply. sub_823B55E8 byte-SWAPS
+// each element in place after aligning it, and the console is big-endian, so a value that should read as N
+// must go on the wire byte-reversed. This file previously wrote them big-endian -- and its tests asserted
+// big-endian, so they passed while the screen was broken.
+//
+// The failure that caused is worth recording because it is not obvious from the symptom: TYPE 2 written
+// big-endian reads back as 0x0200 = 512. That is non-zero, so the record is NOT treated as the list
+// terminator and the UI draws a row for it -- but 512 matches no known type, so nothing fills the row.
+// Hence "bars with no content" rather than an empty or truncated list. The C65 string blocks were always
+// fine: 1-byte elements are not swapped.
 func historyRecord(ev SquadHistoryEvent) [constants.SquadHistoryRecordSize]byte {
 	var rec [constants.SquadHistoryRecordSize]byte
-	binary.BigEndian.PutUint16(rec[0:2], uint16(ev.Type))
+	binary.LittleEndian.PutUint16(rec[0:2], uint16(ev.Type))
 
 	t := time.Unix(ev.CreatedAt, 0).UTC()
-	binary.BigEndian.PutUint16(rec[2:4], uint16(t.Year()))
+	binary.LittleEndian.PutUint16(rec[2:4], uint16(t.Year()))
 	rec[4] = byte(t.Month())
 	rec[5] = byte(t.Day())
 	rec[6] = byte(t.Hour())

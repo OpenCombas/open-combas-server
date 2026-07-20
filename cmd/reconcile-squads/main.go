@@ -9,6 +9,15 @@
 //
 //	go run ./cmd/reconcile-squads            # DRY RUN — prints the plan, writes nothing
 //	go run ./cmd/reconcile-squads -apply     # execute the plan
+//
+// It also carries an unrelated PRE-DEPLOY step behind -grades, which syncs each squad's stored grade with
+// the value derived from its lifetime renown. Nothing renders the stored grade, so this is not a display
+// fix: it exists so the first battle credit after a deploy does not mistake "never persisted" for "just
+// promoted" and write a fictional grade-up into squad history. Run it BEFORE the new binary starts
+// crediting battles. Idempotent.
+//
+//	go run ./cmd/reconcile-squads -grades           # DRY RUN — show which squads are out of sync
+//	go run ./cmd/reconcile-squads -grades -apply    # write the corrected grades
 package main
 
 import (
@@ -23,6 +32,7 @@ import (
 
 func main() {
 	apply := flag.Bool("apply", false, "execute the plan (default is a dry run that writes nothing)")
+	grades := flag.Bool("grades", false, "backfill stored squad grades from lifetime renown instead of reconciling membership")
 	flag.Parse()
 
 	cfg := config.LoadConfig()
@@ -44,6 +54,27 @@ func main() {
 	}()
 
 	squad := server.NewSquadRepository(store)
+
+	// Grade backfill runs on its own flag: it is a pre-deploy step with different timing requirements from
+	// the membership reconcile (it must run BEFORE the new binary credits any battle), and bundling them
+	// would force an operator wanting one to accept the other's writes.
+	if *grades {
+		gr, err := squad.BackfillSquadGrades(ctx, *apply)
+		if err != nil {
+			logging.Error.Fatalf("[RECONCILE] grade backfill failed: %v", err)
+		}
+		mode := "DRY RUN (no writes)"
+		if gr.Applied {
+			mode = "APPLIED"
+		}
+		logging.Info.Printf("[RECONCILE] grade backfill %s — %d squads scanned, %d out of sync", mode, gr.Scanned, len(gr.Changes))
+		printSection("GRADE BACKFILL (stored grade -> derived; no history event)", gr.Changes)
+		if !gr.Applied && len(gr.Changes) > 0 {
+			logging.Info.Printf("[RECONCILE] dry run only — re-run with -grades -apply to execute")
+		}
+		return
+	}
+
 	report, err := squad.ReconcileSquads(ctx, *apply)
 	if err != nil {
 		logging.Error.Fatalf("[RECONCILE] failed: %v", err)
