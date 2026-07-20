@@ -165,7 +165,7 @@ func main() {
 
 	for _, statusServerConfig := range cfg.StatusServers {
 		if statusServerConfig.Enabled {
-			srv := server.NewStatusServer(address, statusServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(statusServerConfig.ServerConfig.Type), "server_name": string(statusServerConfig.ServerConfig.Label)}, reg))
+			srv := server.NewStatusServer(address, statusServerConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(statusServerConfig.ServerConfig.Type), "server_name": string(statusServerConfig.ServerConfig.Label)}, reg), worldRepo)
 			go srv.Run()
 		}
 	}

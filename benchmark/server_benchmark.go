@@ -212,10 +212,14 @@ func BenchmarkStatusServer(cfg BenchmarkConfig) (*BenchmarkResults, error) {
 	listenAddr, appLogging, promCfg, reg := newBenchmarkServer()
 
 	var wg sync.WaitGroup
+	// nil worldRepo: the benchmark exercises the wire path, and MaintenanceWindowFor falls back to the
+	// silent past window without a repo.
 	srv := server.NewStatusServer(
 		listenAddr,
-		config.ServerConfig{Label: "BENCH_STATUS", Port: cfg.StatusPort, Enabled: true, Type: config.Status},
-		4000, appLogging, ctx, &wg, promCfg, reg,
+		config.StatusServerConfig{
+			ServerConfig: config.ServerConfig{Label: "BENCH_STATUS", Port: cfg.StatusPort, Enabled: true, Type: config.Status},
+		},
+		4000, appLogging, ctx, &wg, promCfg, reg, nil,
 	)
 	go srv.Run()
 	time.Sleep(50 * time.Millisecond)

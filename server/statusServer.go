@@ -85,10 +85,11 @@ func CreateStatusRaw(xuid [16]byte, order [8]byte, local ServerTime, maintStart 
 
 type statusServer struct {
 	*messageServer
+	worldRepo *WorldRepository
 }
 
-func NewStatusServer(listenAddress net.IP, serverConfig config.StatusServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *statusServer {
-	s := &statusServer{}
+func NewStatusServer(listenAddress net.IP, serverConfig config.StatusServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer, worldRepo *WorldRepository) *statusServer {
+	s := &statusServer{worldRepo: worldRepo}
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -104,12 +105,20 @@ func NewStatusServer(listenAddress net.IP, serverConfig config.StatusServerConfi
 			return validateStatusPacket(packet, clientAddr, serverConfig.Label)
 		},
 		buildPayload: func(hi UserHelloMessage) interface{} {
-			startTime := time.Now()
+			now := time.Now()
 			if serverConfig.IsResetting {
-				return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(-12*time.Hour), startTime.Add(24*time.Hour), 0x00)
-			} else {
-				return CreateStatus(hi.Xuid, hi.Order, startTime, startTime.Add(120*time.Hour), startTime.Add(140*time.Hour), 0x00)
+				// Deliberately "in maintenance" (start <= now <= end): the client shows the in-progress
+				// announce and keeps players off a resetting world. See maintenanceWindow.go for the state
+				// table this relies on.
+				return CreateStatus(hi.Xuid, hi.Order, now, now.Add(-12*time.Hour), now.Add(24*time.Hour), 0x00)
 			}
+			// Otherwise serve the scheduled window, defaulting to one already in the past so the client
+			// computes "maintenance ended" and announces NOTHING. A future-dated window -- which is what
+			// this used to send -- makes the client nag about it at every login regardless of distance.
+			readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
+			defer cancel()
+			start, end := s.worldRepo.MaintenanceWindowFor(readCtx, now)
+			return CreateStatus(hi.Xuid, hi.Order, now, start, end, 0x00)
 		},
 		responseSize: constants.StatusResponseSize,
 	}

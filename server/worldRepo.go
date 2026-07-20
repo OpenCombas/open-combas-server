@@ -110,6 +110,7 @@ type WorldRepository struct {
 	events       *mongo.Collection
 	captures     *mongo.Collection
 	areaStats    *mongo.Collection
+	maintenance  *mongo.Collection
 }
 
 func NewWorldRepository(store *persistence.Store) *WorldRepository {
@@ -119,6 +120,7 @@ func NewWorldRepository(store *persistence.Store) *WorldRepository {
 		events:       store.Collection(eventsCollection),
 		captures:     store.Collection(capturesCollection),
 		areaStats:    store.Collection(areaStatsCollection),
+		maintenance:  store.Collection(maintenanceCollection),
 	}
 }
 
