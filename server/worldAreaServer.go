@@ -143,6 +143,13 @@ func NewWorldAreaServer(listenAddress net.IP, serverConfig config.ServerConfig, 
 			return s.buildArea(hi)
 		},
 		responseSize: constants.WorldAreaResponseSize,
+
+		// Taint the 3 UNUSED area records (indices 22..24; only 1..22 are real). Body =
+		// WorldHeader(28) + AreaNum(+pad)(4) + 25*AreaRecord(28); record 22 starts at body 32+22*28 = 648,
+		// so buffer offset = MessageHeader(32) + 648 = 680, length 3*28 = 84. See taint.go.
+		taintTag:   TaintWorldArea,
+		taintStart: constants.MinHelloMessageSize + 32 + 22*28, // 680
+		taintLen:   3 * 28,                                     // 84
 	}
 
 	return s

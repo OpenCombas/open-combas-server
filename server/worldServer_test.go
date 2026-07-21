@@ -91,24 +91,3 @@ func TestNationUnknown57ReachesTheWire(t *testing.T) {
 		t.Errorf("Sal Kar DeadFlag = %d, want 0", got)
 	}
 }
-
-// TestFillWeaponFuzz pins the provenance pattern: each Tail byte is 0x80|(k&0x7F), never zero, and the low
-// 7 bits decode to the Tail offset (== World body offset 208+k) so a run seen in the client's weapon object
-// names its source. Tail[0] corresponds to World body +208, the "84 B parsed elsewhere" region.
-func TestFillWeaponFuzz(t *testing.T) {
-	var tail [332]byte
-	fillWeaponFuzz(&tail)
-	for _, k := range []int{0, 1, 27, 83, 128} {
-		want := byte(0x80 | (k & 0x7F))
-		if tail[k] != want {
-			t.Errorf("tail[%d] = %#x, want %#x", k, tail[k], want)
-		}
-		if tail[k] == 0 {
-			t.Errorf("tail[%d] is zero; markers must be non-zero to be distinguishable", k)
-		}
-	}
-	// The 84-byte weapon region (k=0..83) must not wrap (all <= 0xD3), so offsets stay unique there.
-	if tail[83] != 0xD3 {
-		t.Errorf("tail[83] = %#x, want 0xD3 (no wrap within the 84-byte region)", tail[83])
-	}
-}

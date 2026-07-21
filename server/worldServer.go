@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os"
 	"sync"
 	"time"
 
@@ -168,48 +167,23 @@ func defaultNations() [3]NationData {
 	}
 }
 
-// weaponFuzz is ON when WEAPON_FUZZ=1. It is a PROVENANCE TAINT, not gameplay: it fills the World body's
-// currently-zeroed Tail (which begins at body offset 208 -- the "84 B parsed elsewhere" the client's World
-// parser sub_823BD228 skips) with a self-describing byte pattern, so we can read the client's weapon-state
-// object afterwards and see EXACTLY which Tail offset feeds each weapon field (deploy @ weaponObj+0x44+4n,
-// HP @ +56). The client populates that object by memcpy, so a tainted byte carries its source offset with
-// it -- provenance a byte cannot lie about, unlike a hand-derived offset. See chromehounds_map_situation_re.md.
-//
-// Pattern: Tail[k] = 0x80 | (k & 0x7F). Values are 0x80..0xFF (never a natural 0), and the low 7 bits give
-// the Tail offset (== World body offset 208+k). A contiguous run like 80 81 82 83 appearing in the weapon
-// object thus decodes directly to "World body +208". This taints ONLY the World (195) message; if the
-// markers do NOT appear in the weapon object, the source is a different world-family message and the taint
-// moves there next.
-var weaponFuzz = os.Getenv("WEAPON_FUZZ") == "1"
-
-func init() {
-	// Logged unconditionally, both states: a capture must never be silently confounded by not knowing
-	// whether the World Tail carries the provenance taint or real (zero) data.
-	if weaponFuzz {
-		logging.Warn.Printf("WEAPON_FUZZ ACTIVE -- World (195) Tail is filled with the 0x80|(k&0x7F) provenance " +
-			"pattern instead of zeros. This is a diagnostic taint; unset WEAPON_FUZZ for normal captures.")
-	} else {
-		logging.Info.Printf("WEAPON_FUZZ off -- World Tail served as zeros (normal).")
-	}
-}
-
-func fillWeaponFuzz(t *[332]byte) {
-	for k := range t {
-		t[k] = 0x80 | byte(k&0x7F)
-	}
-}
+// worldTailTaintStart / worldTailTaintLen locate the World (195) Tail in the RESPONSE buffer for the
+// shared provenance taint (TaintWorld). Response = MessageHeader(32) + body(540); body = WorldHeader(28) +
+// 3*NationData(180) + Tail(332), so the Tail begins at buffer offset 32+208 = 240. See taint.go.
+// (RULED OUT 2026-07-21: World Tail markers reached the client on the wire but did NOT appear in the
+// weapon-state object, so the unidentified-weapon source is a different message.)
+const (
+	worldTailTaintStart = constants.MinHelloMessageSize + 208 // 240
+	worldTailTaintLen   = 332
+)
 
 // newWorldState assembles the reply from a fixed set of nations (static fallback or Mongo-backed).
 func newWorldState(xuid [16]byte, order [8]byte, nations [3]NationData) WorldState {
-	ws := WorldState{
+	return WorldState{
 		Header:  CreateHeader(xuid, order),
 		World:   worldHeaderNow(),
 		Nations: nations,
 	}
-	if weaponFuzz {
-		fillWeaponFuzz(&ws.Tail)
-	}
-	return ws
 }
 
 func CreateWorldState(xuid [16]byte, order [8]byte) WorldState {
@@ -277,6 +251,10 @@ func NewWorldServer(listenAddress net.IP, serverConfig config.ServerConfig, buff
 			return s.buildWorld(hi)
 		},
 		responseSize: constants.WorldResponseSize,
+
+		taintTag:   TaintWorld,
+		taintStart: worldTailTaintStart,
+		taintLen:   worldTailTaintLen,
 	}
 
 	return s

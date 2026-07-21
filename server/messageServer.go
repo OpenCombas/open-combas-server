@@ -64,6 +64,27 @@ type messageServer struct {
 	buildPayload   func(hi UserHelloMessage) interface{}
 	buildResponse  func(readBuffer *[]byte) (*[]byte, error)
 	responseSize   int
+
+	// Provenance taint (diagnostic). When taintTag is enabled via SERVER_TAINT, the response buffer's
+	// [taintStart, taintStart+taintLen) byte range is overwritten with markers POST-ENCODE. taintLen == 0
+	// disables it. See taint.go.
+	taintTag   TaintTag
+	taintStart int
+	taintLen   int
+}
+
+// applyTaint overwrites the configured reserved byte range of an already-encoded response with provenance
+// markers, if this server's tag is enabled. No-op otherwise. Post-encode so markers reach the wire exactly.
+func (s *messageServer) applyTaint(buf []byte) {
+	if s.taintLen == 0 || !TaintActive(s.taintTag) {
+		return
+	}
+	end := s.taintStart + s.taintLen
+	if s.taintStart < 0 || end > len(buf) {
+		logging.Warn.Printf("[%s] taint range [%d,%d) outside %d-byte response; skipping", s.serverConfig.Label, s.taintStart, end, len(buf))
+		return
+	}
+	TaintFill(buf[s.taintStart:end], s.taintTag)
 }
 
 func (s *messageServer) Run() {
@@ -169,9 +190,14 @@ func (s *messageServer) createOrderedResponse(readBuffer *[]byte) (*[]byte, erro
 
 	if s.buildResponse != nil {
 		result, err := s.buildResponse(readBuffer)
-		if err == nil && enablePerformanceMonitoring {
-			processingTime := time.Since(startTime)
-			logging.LogPerformanceMetric(label, "response_creation", processingTime)
+		if err == nil {
+			if result != nil {
+				s.applyTaint(*result)
+			}
+			if enablePerformanceMonitoring {
+				processingTime := time.Since(startTime)
+				logging.LogPerformanceMetric(label, "response_creation", processingTime)
+			}
 		}
 		return result, err
 	}
@@ -188,6 +214,7 @@ func (s *messageServer) createOrderedResponse(readBuffer *[]byte) (*[]byte, erro
 		logging.Warn.Printf("[%s] Error populating sendbuffer: %s", label, err)
 		return nil, err
 	}
+	s.applyTaint(responseBuffer)
 
 	if enablePerformanceMonitoring {
 		processingTime := time.Since(startTime)
