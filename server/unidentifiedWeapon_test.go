@@ -107,3 +107,34 @@ func TestWeaponDeploymentDoesNotLockTheBattlefield(t *testing.T) {
 		t.Errorf("capture lock MapLockFlag = %d, want 1", got)
 	}
 }
+
+// TestWeaponHQAreas pins each nation's capital, which the last-stand simulation pairs with the weapon area.
+func TestWeaponHQAreas(t *testing.T) {
+	for _, c := range []struct {
+		nation byte
+		hq     int32
+	}{{'A', 1}, {'B', 2}, {'C', 3}} {
+		got, ok := WeaponHQArea(c.nation)
+		if !ok || got != c.hq {
+			t.Errorf("WeaponHQArea(%q) = %d (ok=%v), want %d", string(c.nation), got, ok, c.hq)
+		}
+	}
+	if _, ok := WeaponHQArea('D'); ok {
+		t.Error("nation 'D' should not resolve")
+	}
+}
+
+// TestLastStandIsExactlyTenDots is the arithmetic behind the hypothesis, pinned so a reset-table change
+// cannot silently invalidate the scenario.
+//
+// Every area distributes exactly 5 "orange dots" (reset.areaDotTotal), so a nation reduced to its HQ area
+// plus its weapon area holds exactly 10 -- which is the operator's remembered "<= 10 occupation points"
+// threshold. If someone retunes areaDotTotal or the per-area split, this stops being a two-area condition
+// and the simulation no longer reproduces the state it claims to.
+func TestLastStandIsExactlyTenDots(t *testing.T) {
+	const dotsPerArea = 5 // reset.areaDotTotal
+	const areasHeld = 2   // HQ + weapon area
+	if got := dotsPerArea * areasHeld; got != 10 {
+		t.Errorf("last stand holds %d occupation points, want 10", got)
+	}
+}

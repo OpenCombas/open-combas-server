@@ -230,3 +230,149 @@ func (r *WorldRepository) WeaponDeployedNation(ctx context.Context, areaID, mapI
 	}
 	return b.WeaponNation[0], nil
 }
+
+// ---------------------------------------------------------------------------
+// Canonical unidentified-weapon world state (simulation support)
+// ---------------------------------------------------------------------------
+//
+// OPERATOR HYPOTHESIS (2026-07-21), not yet confirmed: retail deployed a nation's superweapon when that
+// nation had been beaten down to <= 10 occupation points ("orange dots") across the whole map AND had just
+// retaken its weapon area from an occupier.
+//
+// The threshold is structurally suggestive rather than arbitrary: every area distributes exactly
+// areaDotTotal = 5 dots (reset.areaDots), so <= 10 points is precisely "reduced to two areas" -- for
+// Sal Kar, its HQ (area 3, Qara) plus its weapon area (18). That is a last-stand condition, which fits a
+// desperation superweapon.
+//
+// WeaponLastStand builds that world state so it can be tested. It is a SIMULATION SETUP, not gameplay
+// logic: nothing here decides when a weapon appears.
+
+// WeaponHQArea returns a nation's capital area (1 Xeres / 2 Ostrov / 3 Qara).
+func WeaponHQArea(nation byte) (int32, bool) {
+	switch nation {
+	case 'A':
+		return 1, true
+	case 'B':
+		return 2, true
+	case 'C':
+		return 3, true
+	}
+	return 0, false
+}
+
+// LastStandPlan is the set of battlefield mutations WeaponLastStand would apply.
+type LastStandPlan struct {
+	Nation     byte
+	HQArea     int32
+	WeaponArea int32
+	WeaponMap  int32
+	Conqueror  byte
+	Held       []string // battlefields handed to Nation
+	Ceded      []string // battlefields handed away
+	Unlocked   []string // capture-locks cleared
+	DotsAfter  int32    // Nation's occupation points once applied
+	DotsOtherA int32
+	DotsOtherB int32
+}
+
+// WeaponLastStand drives a nation down to holding ONLY its HQ area and its weapon area, ceding every other
+// battlefield to conqueror (or, for battlefields the conqueror cannot plausibly hold, to the remaining
+// nation). Capture locks on the weapon area are cleared, because a locked battlefield accepts no missions
+// and would make the area untestable.
+//
+// apply=false plans without writing.
+func (r *WorldRepository) WeaponLastStand(ctx context.Context, nation, conqueror byte, apply bool) (LastStandPlan, error) {
+	site, ok := UnidentifiedWeaponSiteFor(nation)
+	if !ok {
+		return LastStandPlan{}, fmt.Errorf("unknown nation %q", string(nation))
+	}
+	hq, _ := WeaponHQArea(site.Nation)
+	if conqueror == site.Nation || occFieldName(conqueror) == "" {
+		return LastStandPlan{}, fmt.Errorf("conqueror %q must be a different, valid nation", string(conqueror))
+	}
+	plan := LastStandPlan{
+		Nation: site.Nation, HQArea: hq, WeaponArea: site.AreaID, WeaponMap: site.MapID, Conqueror: conqueror,
+	}
+
+	var all []Battlefield
+	cur, err := r.battlefields.Find(ctx, bson.M{})
+	if err != nil {
+		return plan, err
+	}
+	if err := cur.All(ctx, &all); err != nil {
+		return plan, err
+	}
+
+	for _, bf := range all {
+		keep := bf.AreaID == hq || bf.AreaID == site.AreaID
+		owner := conqueror
+		if keep {
+			owner = site.Nation
+		}
+
+		label := fmt.Sprintf("%d/%d", bf.AreaID, bf.MapID)
+		if keep {
+			plan.Held = append(plan.Held, label)
+			plan.DotsAfter += bf.StrategicValue
+		} else {
+			plan.Ceded = append(plan.Ceded, label)
+			if conqueror == 'A' {
+				plan.DotsOtherA += bf.StrategicValue
+			} else {
+				plan.DotsOtherB += bf.StrategicValue
+			}
+		}
+
+		// A capture lock on the weapon area would block the very missions this setup exists to allow.
+		clearLock := bf.AreaID == site.AreaID && (bf.Locked || bf.DefeatedNation != "")
+		if clearLock {
+			plan.Unlocked = append(plan.Unlocked, label)
+		}
+		if !apply {
+			continue
+		}
+
+		set := bson.M{"occA": int32(0), "occB": int32(0), "occC": int32(0)}
+		set[occFieldName(owner)] = bf.Capacity // 100% to the owner
+		update := bson.M{"$set": set}
+		if clearLock {
+			update["$unset"] = bson.M{"locked": "", "defeatedNation": "", "unlockAtBattle": ""}
+		}
+		if _, err := r.battlefields.UpdateOne(ctx,
+			bson.M{"areaId": bf.AreaID, "mapId": bf.MapID}, update); err != nil {
+			return plan, err
+		}
+	}
+	return plan, nil
+}
+
+// occFieldName maps a nation char to its stored occupation field.
+func occFieldName(n byte) string {
+	switch n {
+	case 'A':
+		return "occA"
+	case 'B':
+		return "occB"
+	case 'C':
+		return "occC"
+	}
+	return ""
+}
+
+// RecordRegionRecapture publishes the "<loser> Abandons <area>" WORLD_NEWS story, i.e. the moment an area
+// changes hands. Used by the weapon simulation to stage the "just retaken its weapon area" precondition;
+// the normal path for this is RecordRegionCaptureEvent off a real battle report.
+func (r *WorldRepository) RecordRegionRecapture(ctx context.Context, areaID int32, loser byte, when time.Time) error {
+	row, ok := regionCaptureRow(loser)
+	if !ok {
+		return fmt.Errorf("no region-capture row for losing nation %q", string(loser))
+	}
+	if when.IsZero() {
+		when = time.Now()
+	}
+	return r.RecordEvent(ctx, EventRecord{
+		CreatedAt:  when.Unix(),
+		TemplateID: row,
+		Slot1:      areaNameSlot(areaID),
+	})
+}
