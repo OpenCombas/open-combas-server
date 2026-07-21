@@ -15,12 +15,14 @@
 //	go run ./cmd/unidentified-weapon -nation B -phase withdraw -apply
 //	go run ./cmd/unidentified-weapon -status                       # what each nation is currently doing
 //
-// Deploying also records Battlefield.WeaponNation. That is BOOKKEEPING ONLY -- it raises no wire flag and
-// the client cannot currently see it. Use -news-only to skip it.
+// Deploying also records Battlefield.WeaponNation, which DRIVES THE CLIENT: the World (195) reply raises the
+// per-nation deploy byte for it, so the weapon actually appears on the war map (proven in-game 2026-07-21).
+// destroy/withdraw clear it and the weapon disappears. The client picks the change up on its next World
+// refresh (a fresh session for a frozen weapon object). Use -news-only to publish the story without it.
 //
-// マップロックフラグ was tried as the map-state lever and REJECTED by testing (2026-07-21): it does not
-// switch the area-info preview to the _01 variant, it closes the battlefield to every nation including the
-// attackers, which made the weapon unkillable. The real selector is still unfound.
+// マップロックフラグ was tried as the map-state lever and REJECTED by testing (2026-07-21): it just closes
+// the battlefield to every nation including the attackers, making the weapon unkillable. The real selector
+// is the World Tail[228+n] deploy byte -- see server/worldServer.go weaponDeployTailBase.
 package main
 
 import (
@@ -102,9 +104,9 @@ func main() {
 		logging.Warn.Printf("[WEAPON] %s (proceeding: -force)", problem)
 	}
 
-	effect := "records deployment (bookkeeping only -- no client-visible effect)"
+	effect := "deploys the weapon (raises the World deploy byte -- shows on the war map next refresh)"
 	if phase != server.WeaponAppears {
-		effect = "clears deployment record"
+		effect = "clears deployment (weapon disappears next refresh)"
 	}
 	if *newsOnly {
 		effect = "news only -- deployment record untouched"
