@@ -9,6 +9,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // UNIDENTIFIED WEAPON events (WORLD_NEWS rows 47-52 and 81-83).
@@ -24,12 +25,21 @@ import (
 //	Morskoj 'B' -> East Salma Woods     (area 17, map 4)  appear 48  destroyed 51  withdrawn 82
 //	Sal Kar 'C' -> South Cemo Oil Field (area 18, map 4)  appear 49  destroyed 52  withdrawn 83
 //
-// SCOPE. This emits the NEWS and records the DEPLOYMENT (Battlefield.WeaponNation). The deployment is
-// currently BOOKKEEPING ONLY -- it changes nothing the client can see.
+// SCOPE. This emits the NEWS and records the DEPLOYMENT (Battlefield.WeaponNation), and that deployment
+// now DRIVES THE CLIENT: buildWorld raises the World (195) per-nation deploy byte for any nation with a
+// weapon deployed here, which is what makes the weapon show on the war map. See applyWeaponDeploy.
 //
-// マップロックフラグ was tried as the map-state lever and REJECTED by testing (2026-07-21): it does not
-// switch the area-info preview to the _01 variant, it just closes the battlefield to every nation
-// including the attackers, making the weapon unkillable. WeaponNation therefore does not feed it.
+// THE SELECTOR (found 2026-07-21, proven live). The client's weapon-state object is populated from the
+// World (195) reply by the 0x6004 handler sub_823C1B10, which copies the per-nation DEPLOY byte from World
+// body offset 436+n (= Tail[228+n]) to weaponObj+68/72/76. WorldMapScene_UpdateWeapons reads that field
+// via GetWeaponEnableForNation and, when non-zero, calls SetBattlefieldWeaponFlag to light the weapon. So
+// the selector is one wire byte per nation -- server-controlled, no title patch, no debug toggle. (The
+// separate 28-byte record at Tail[28n..] -> weaponObj+260 is the weapon's durability/HP display state; the
+// DB WeaponRecordHex field feeds it.)
+//
+// マップロックフラグ was tried first and REJECTED by testing (2026-07-21): it does not switch the area-info
+// preview to the _01 variant, it just closes the battlefield to every nation including the attackers,
+// making the weapon unkillable. WeaponNation therefore does not feed it -- it feeds the deploy byte above.
 //
 // WHAT THE MISSION ACTUALLY IS (Event/lua/JIT/event_201..203.lua, retail): a host-authoritative boss
 // encounter with a 600s countdown, one per nation --
@@ -38,9 +48,8 @@ import (
 //	202 Morskoj  boss actor c0521_000  (Remo 0030)
 //	203 Sal Kar  boss actor c0531_000  (Remo 0040)
 //
-// Those scripts run at mission LAUNCH, so they show what the mission is, not how a battlefield is put into
-// the state. The selector remains unfound: it is in neither the area (196), area-info (197) nor
-// battlefield-detail (198) records, all of whose schemas are fully accounted for.
+// Those scripts run at mission LAUNCH; the deploy byte above is what puts the battlefield into the state
+// the war map shows.
 
 // UnidentifiedWeaponPhase is one stage of a weapon's lifecycle.
 type UnidentifiedWeaponPhase int
@@ -175,9 +184,9 @@ func (r *WorldRepository) RecordUnidentifiedWeaponEvent(ctx context.Context, nat
 
 // SetWeaponDeployed records a nation's weapon as deployed on its fixed battlefield. Returns the site.
 //
-// This is BOOKKEEPING ONLY today: it raises no wire flag and changes nothing the client sees. It does not
-// set Battlefield.Locked, and it deliberately no longer feeds マップロックフラグ -- doing so was tested
-// and closed the battlefield to the attackers, making the weapon unkillable.
+// This drives the client: buildWorld reads it (DeployedWeaponNations) and raises the World (195) per-nation
+// deploy byte, which lights the weapon on the war map. It does NOT set Battlefield.Locked and does not feed
+// マップロックフラグ -- that would close the battlefield to the attackers and make the weapon unkillable.
 func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
 	site, ok := UnidentifiedWeaponSiteFor(nation)
 	if !ok {
@@ -213,6 +222,30 @@ func (r *WorldRepository) ClearWeaponDeployed(ctx context.Context, nation byte) 
 		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
 	}
 	return site, nil
+}
+
+// DeployedWeaponNations returns the set of nations ('A'/'B'/'C') that currently have an unidentified
+// weapon deployed on their fixed battlefield (any Battlefield.WeaponNation set to them). buildWorld uses
+// it to raise the World (195) per-nation deploy byte, which is what actually makes the weapon appear on
+// the war map -- see applyWeaponDeploy.
+func (r *WorldRepository) DeployedWeaponNations(ctx context.Context) (map[byte]bool, error) {
+	cur, err := r.battlefields.Find(ctx,
+		bson.M{"weaponNation": bson.M{"$nin": bson.A{"", nil}}},
+		options.Find().SetProjection(bson.M{"weaponNation": 1}))
+	if err != nil {
+		return nil, err
+	}
+	var bfs []Battlefield
+	if err := cur.All(ctx, &bfs); err != nil {
+		return nil, err
+	}
+	out := make(map[byte]bool, 3)
+	for _, b := range bfs {
+		if b.WeaponNation != "" {
+			out[b.WeaponNation[0]] = true
+		}
+	}
+	return out, nil
 }
 
 // WeaponDeployedNation returns the nation whose weapon is deployed on a battlefield, or 0 for none.

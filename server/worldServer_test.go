@@ -145,3 +145,34 @@ func TestApplyWeaponRecordsTruncatesAndSkips(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyWeaponDeploy pins the per-nation deploy byte offsets the live capture proved: A=Tail[228],
+// B=Tail[229], C=Tail[230] (= World body 436/437/438 -> weaponObj+68/72/76). A wrong offset here means the
+// weapon silently never appears (the byte lands somewhere the client ignores).
+func TestApplyWeaponDeploy(t *testing.T) {
+	s := &worldServer{messageServer: &messageServer{serverConfig: &config.ServerConfig{Label: "TEST"}}}
+
+	var tail [332]byte
+	s.applyWeaponDeploy(&tail, map[byte]bool{'C': true}) // Sal Kar only
+	if tail[228] != 0 || tail[229] != 0 {
+		t.Errorf("only C should deploy: tail[228]=%d tail[229]=%d, want 0,0", tail[228], tail[229])
+	}
+	if tail[230] != 1 {
+		t.Errorf("Sal Kar deploy byte tail[230] = %d, want 1", tail[230])
+	}
+
+	// All three, and confirm the exact per-nation offsets.
+	var tail2 [332]byte
+	s.applyWeaponDeploy(&tail2, map[byte]bool{'A': true, 'B': true, 'C': true})
+	for off, code := range map[int]byte{228: 'A', 229: 'B', 230: 'C'} {
+		if tail2[off] != 1 {
+			t.Errorf("nation %c deploy byte tail[%d] = %d, want 1", code, off, tail2[off])
+		}
+	}
+	// The deploy byte must not collide with the 28-byte weapon records (Tail[0..83]).
+	for k := 0; k < 84; k++ {
+		if tail2[k] != 0 {
+			t.Errorf("deploy write bled into record region: tail[%d]=%d", k, tail2[k])
+		}
+	}
+}

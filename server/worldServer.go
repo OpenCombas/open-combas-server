@@ -171,12 +171,21 @@ func defaultNations() [3]NationData {
 // worldTailTaintStart / worldTailTaintLen locate the World (195) Tail in the RESPONSE buffer for the
 // shared provenance taint (TaintWorld). Response = MessageHeader(32) + body(540); body = WorldHeader(28) +
 // 3*NationData(180) + Tail(332), so the Tail begins at buffer offset 32+208 = 240. See taint.go.
-// (RULED OUT 2026-07-21: World Tail markers reached the client on the wire but did NOT appear in the
-// weapon-state object, so the unidentified-weapon source is a different message.)
+// (CONFIRMED 2026-07-21: the World Tail IS the unidentified-weapon source. A fresh-process capture landed
+// Tail markers at weaponObj+260 via the 0x6004 handler sub_823C1B10; an earlier "ruled out" read was a
+// stale, un-refreshed weapon object. The deploy byte lives at Tail[228+n] -- see weaponDeployTailBase.)
 const (
 	worldTailTaintStart = constants.MinHelloMessageSize + 208 // 240
 	worldTailTaintLen   = 332
 )
+
+// weaponDeployTailBase is the World Tail offset of the per-nation UNIDENTIFIED-WEAPON deploy byte: A at
+// Tail[228], B at Tail[229], C at Tail[230] (= World body 436/437/438). PROVEN 2026-07-21: the client's
+// 0x6004 handler sub_823C1B10 copies the byte at (World body 436+n) to weaponObj+68/72/76, which
+// WorldMapScene_UpdateWeapons reads via GetWeaponEnableForNation; non-zero -> SetBattlefieldWeaponFlag
+// lights the weapon on the war map. This is the server lever for the weapon -- no title patch, no debug
+// toggle. (The 28-byte record at Tail[28n..] is the separate durability/HP display state, WeaponRecordHex.)
+const weaponDeployTailBase = 228
 
 // newWorldState assembles the reply from a fixed set of nations (static fallback or Mongo-backed).
 func newWorldState(xuid [16]byte, order [8]byte, nations [3]NationData) WorldState {
@@ -226,6 +235,22 @@ func (s *worldServer) applyWeaponRecords(tail *[332]byte, recs []NationRecord) {
 	}
 }
 
+// applyWeaponDeploy raises the per-nation deploy byte in the World Tail for every nation whose weapon is
+// currently deployed (Battlefield.WeaponNation). This is the byte the client turns into a visible weapon on
+// the war map (see weaponDeployTailBase). A nation not present in `deployed` keeps its zero byte (no weapon).
+func (s *worldServer) applyWeaponDeploy(tail *[332]byte, deployed map[byte]bool) {
+	for _, code := range []byte{'A', 'B', 'C'} {
+		if !deployed[code] {
+			continue
+		}
+		idx := nationTailIndex(string(code))
+		if idx < 0 {
+			continue
+		}
+		tail[weaponDeployTailBase+idx] = 1
+	}
+}
+
 func CreateWorldState(xuid [16]byte, order [8]byte) WorldState {
 	return newWorldState(xuid, order, defaultNations())
 }
@@ -267,6 +292,14 @@ func (s *worldServer) buildWorld(hi UserHelloMessage) WorldState {
 			}
 			ws := newWorldState(hi.Xuid, hi.Order, nations)
 			s.applyWeaponRecords(&ws.Tail, recs)
+			// Raise the per-nation deploy byte for any nation with a weapon deployed on its battlefield.
+			// This is what actually makes the weapon appear on the war map. A read error leaves the bytes
+			// zero (no weapon shown) rather than dropping the whole reply.
+			if deployed, err := s.repo.DeployedWeaponNations(readCtx); err != nil {
+				logging.Warn.Printf("[%s] weapon-deploy read failed, no weapons shown this reply: %v", s.serverConfig.Label, err)
+			} else {
+				s.applyWeaponDeploy(&ws.Tail, deployed)
+			}
 			return ws
 		}
 	}
