@@ -70,6 +70,16 @@ type Battlefield struct {
 	Locked         bool   `bson:"locked,omitempty"`
 	DefeatedNation string `bson:"defeatedNation,omitempty"` // "A"/"B"/"C" locked out of this battlefield
 	UnlockAtBattle int32  `bson:"unlockAtBattle,omitempty"` // DefeatedNation battleCount at which it reopens
+	// WeaponNation is the nation ("A"/"B"/"C") whose UNIDENTIFIED WEAPON is deployed here, or "" for none.
+	//
+	// Deliberately NOT the Locked flag above. A capture lock closes a battlefield to EVERYONE; a weapon
+	// bans only its own nation's mercenaries -- every other nation must still be able to fight here, or the
+	// weapon could never be destroyed and the story would have no ending. Reusing Locked would silently
+	// make the weapon invincible.
+	//
+	// Both states raise the same wire byte (マップロックフラグ, AreaMapRecord.MapLockFlag) -- see
+	// toAreaMapRecord.
+	WeaponNation string `bson:"weaponNation,omitempty"`
 }
 
 // UnlockBattleThreshold is how many other battles the defeated nation must fight (anywhere, win or
@@ -784,9 +794,17 @@ func leadFaction(a, b, c int32) (idx int, level int32) {
 
 func (b Battlefield) toAreaMapRecord() AreaMapRecord {
 	leader, level := leadFaction(b.OccA, b.OccB, b.OccC)
+	// マップロックフラグ. Raised by a capture lock OR an active unidentified weapon.
+	//
+	// UNVERIFIED HYPOTHESIS worth knowing when reading a capture: this byte may ALSO select the battlefield
+	// preview variant on the area-info page. The client composes that image as "m<area>_<map>_<state>_cap.bin"
+	// and the three weapon battlefields are the only ones shipping a _01 image, which lines up with the
+	// weapon being the thing that locks them. If that holds, a capture-locked battlefield has always been
+	// requesting a _01 preview and silently falling back (sub_821402A8 retries with 0,0,0 when the file is
+	// missing), which would be invisible in logs. Setting this for a weapon is how we test it.
 	var lock byte
-	if b.Locked {
-		lock = 1 // マップロックフラグ: tells the client this battlefield is closed to missions
+	if b.Locked || b.WeaponNation != "" {
+		lock = 1
 	}
 	return AreaMapRecord{
 		MapID:              int16(b.MapID),

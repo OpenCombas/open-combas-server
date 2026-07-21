@@ -2,9 +2,13 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 // UNIDENTIFIED WEAPON events (WORLD_NEWS rows 47-52 and 81-83).
@@ -20,9 +24,13 @@ import (
 //	Morskoj 'B' -> East Salma Woods     (area 17, map 4)  appear 48  destroyed 51  withdrawn 82
 //	Sal Kar 'C' -> South Cemo Oil Field (area 18, map 4)  appear 49  destroyed 52  withdrawn 83
 //
-// SCOPE: this file only emits the NEWS. The mercenary ban the stories describe is a real gameplay effect
-// (that battlefield should be closed to the owning nation's players while the weapon stands) and is NOT
-// implemented here -- see UnidentifiedWeaponSite for the battlefield ids a future lock would need.
+// SCOPE. This emits the NEWS and records the DEPLOYMENT (Battlefield.WeaponNation), which raises
+// マップロックフラグ on that battlefield. What is NOT enforced yet is the ban itself: nothing stops the
+// owning nation's players from deploying there, because that gate is in the client's mission-select path,
+// not in anything we serve. So the ban is currently advertised but not enforced.
+//
+// The deployment flag is also how we test whether マップロックフラグ selects the battlefield preview
+// variant on the area-info page -- see toAreaMapRecord for that hypothesis.
 
 // UnidentifiedWeaponPhase is one stage of a weapon's lifecycle.
 type UnidentifiedWeaponPhase int
@@ -153,4 +161,64 @@ func (r *WorldRepository) RecordUnidentifiedWeaponEvent(ctx context.Context, nat
 		when = time.Now()
 	}
 	return row, r.RecordEvent(ctx, EventRecord{CreatedAt: when.Unix(), TemplateID: row})
+}
+
+// SetWeaponDeployed marks a nation's weapon as deployed on its fixed battlefield, raising
+// マップロックフラグ for that map. Returns the battlefield it touched.
+//
+// This does NOT set Battlefield.Locked: that flag closes a battlefield to every nation, whereas a weapon
+// bans only its owner's mercenaries. Rival nations must keep fighting here -- destroying the weapon is the
+// point -- so the deployment is recorded as WeaponNation instead.
+func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
+	site, ok := UnidentifiedWeaponSiteFor(nation)
+	if !ok {
+		return site, fmt.Errorf("unknown nation %q", string(nation))
+	}
+	res, err := r.battlefields.UpdateOne(ctx,
+		bson.M{"areaId": site.AreaID, "mapId": site.MapID},
+		bson.M{"$set": bson.M{"weaponNation": string(site.Nation)}},
+	)
+	if err != nil {
+		return site, err
+	}
+	if res.MatchedCount == 0 {
+		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
+	}
+	return site, nil
+}
+
+// ClearWeaponDeployed removes a nation's weapon deployment, lowering マップロックフラグ unless the
+// battlefield is also capture-locked.
+func (r *WorldRepository) ClearWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
+	site, ok := UnidentifiedWeaponSiteFor(nation)
+	if !ok {
+		return site, fmt.Errorf("unknown nation %q", string(nation))
+	}
+	res, err := r.battlefields.UpdateOne(ctx,
+		bson.M{"areaId": site.AreaID, "mapId": site.MapID},
+		bson.M{"$unset": bson.M{"weaponNation": ""}},
+	)
+	if err != nil {
+		return site, err
+	}
+	if res.MatchedCount == 0 {
+		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
+	}
+	return site, nil
+}
+
+// WeaponDeployedNation returns the nation whose weapon is deployed on a battlefield, or 0 for none.
+func (r *WorldRepository) WeaponDeployedNation(ctx context.Context, areaID, mapID int32) (byte, error) {
+	var b Battlefield
+	err := r.battlefields.FindOne(ctx, bson.M{"areaId": areaID, "mapId": mapID}).Decode(&b)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	if b.WeaponNation == "" {
+		return 0, nil
+	}
+	return b.WeaponNation[0], nil
 }

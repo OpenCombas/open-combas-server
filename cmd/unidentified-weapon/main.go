@@ -15,9 +15,16 @@
 //	go run ./cmd/unidentified-weapon -nation B -phase withdraw -apply
 //	go run ./cmd/unidentified-weapon -status                       # what each nation is currently doing
 //
-// SCOPE: this emits the NEWS only. The stories say the nation bans its own mercenaries from that
-// battlefield while the weapon stands; that gameplay effect is not implemented, so the ban is currently
-// narrative. See server/unidentifiedWeapon.go for the battlefield ids a future lock would need.
+// Deploying also sets Battlefield.WeaponNation, which raises マップロックフラグ on that battlefield;
+// destroy/withdraw clears it. Use -news-only to publish a story without touching world state.
+//
+// WHAT IS AND IS NOT ENFORCED. The ban is advertised, not enforced: nothing stops the owning nation's
+// players from deploying there, because that gate lives in the client's mission-select path. Rival nations
+// are deliberately left free to fight here -- Battlefield.Locked is NOT set, since that would close the
+// battlefield to everyone and make the weapon impossible to destroy.
+//
+// マップロックフラグ may ALSO drive the battlefield preview image on the area-info page (the "_01" map
+// variant); that is an untested hypothesis and deploying a weapon is how to test it. See toAreaMapRecord.
 package main
 
 import (
@@ -41,6 +48,7 @@ func main() {
 	apply := flag.Bool("apply", false, "write the event (default is a dry run that writes nothing)")
 	status := flag.Bool("status", false, "report each nation's current weapon state and exit")
 	force := flag.Bool("force", false, "skip the transition check (e.g. destroy a weapon with no recorded deployment)")
+	newsOnly := flag.Bool("news-only", false, "publish the story without touching the battlefield's weapon state")
 	flag.Parse()
 
 	cfg := config.LoadConfig()
@@ -98,12 +106,36 @@ func main() {
 		logging.Warn.Printf("[WEAPON] %s (proceeding: -force)", problem)
 	}
 
-	logging.Info.Printf("[WEAPON] %s (%c) weapon %s at %s -- WORLD_NEWS row %d",
-		site.NationName, site.Nation, phase, site.Battlefield, row)
+	effect := "raises マップロックフラグ on that battlefield"
+	if phase != server.WeaponAppears {
+		effect = "lowers マップロックフラグ"
+	}
+	if *newsOnly {
+		effect = "news only -- battlefield state untouched"
+	}
+	logging.Info.Printf("[WEAPON] %s (%c) weapon %s at %s (area %d map %d) -- WORLD_NEWS row %d; %s",
+		site.NationName, site.Nation, phase, site.Battlefield, site.AreaID, site.MapID, row, effect)
 
 	if !*apply {
 		logging.Info.Printf("[WEAPON] dry run -- nothing written; re-run with -apply")
 		return
+	}
+
+	// Battlefield state first, then the news. If the state write fails we stop before publishing a story
+	// that claims a weapon exists -- news is player-visible and cannot be retracted, whereas a failed flag
+	// write leaves the world consistent with the (unpublished) story.
+	if !*newsOnly {
+		var err error
+		if phase == server.WeaponAppears {
+			_, err = repo.SetWeaponDeployed(ctx, code)
+		} else {
+			_, err = repo.ClearWeaponDeployed(ctx, code)
+		}
+		if err != nil {
+			logging.Error.Fatalf("[WEAPON] battlefield state update failed (no news published): %v", err)
+		}
+		logging.Info.Printf("[WEAPON] battlefield %d/%d マップロックフラグ %s",
+			site.AreaID, site.MapID, map[bool]string{true: "RAISED", false: "lowered"}[phase == server.WeaponAppears])
 	}
 
 	if _, err := repo.RecordUnidentifiedWeaponEvent(ctx, code, phase, time.Now()); err != nil {
@@ -138,16 +170,34 @@ func reportStatus(ctx context.Context, repo *server.WorldRepository) {
 			logging.Error.Printf("[WEAPON] %s: lookup failed: %v", site.NationName, err)
 			continue
 		}
+		// Report the battlefield flag as well as the news feed. They are written together but are separate
+		// records, so a disagreement means a half-applied run -- worth seeing rather than inferring.
+		deployed, derr := repo.WeaponDeployedNation(ctx, site.AreaID, site.MapID)
+		flag := "clear"
+		switch {
+		case derr != nil:
+			flag = "unreadable"
+		case deployed == code:
+			flag = "SET"
+		case deployed != 0:
+			flag = "set by " + string(deployed) + "?!"
+		}
+
+		news := "none"
 		switch {
 		case !state.Found:
-			logging.Info.Printf("[WEAPON] %-8s (%c) no weapon events on record       site: %s",
-				site.NationName, code, site.Battlefield)
+			news = "no events"
 		case state.Active:
-			logging.Info.Printf("[WEAPON] %-8s (%c) DEPLOYED                         site: %s",
-				site.NationName, code, site.Battlefield)
+			news = "DEPLOYED"
 		default:
-			logging.Info.Printf("[WEAPON] %-8s (%c) last event: %-9s          site: %s",
-				site.NationName, code, state.Last, site.Battlefield)
+			news = state.Last.String()
 		}
+
+		warn := ""
+		if (news == "DEPLOYED") != (flag == "SET") {
+			warn = "   <-- news and battlefield flag DISAGREE"
+		}
+		logging.Info.Printf("[WEAPON] %-8s (%c) news: %-9s  flag: %-10s  site: %s (%d/%d)%s",
+			site.NationName, code, news, flag, site.Battlefield, site.AreaID, site.MapID, warn)
 	}
 }
