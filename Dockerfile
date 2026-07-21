@@ -23,6 +23,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/seedhis
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reconcile-squads ./cmd/reconcile-squads
 # gamertag backfill (corrects host-clobbered gamertags from the webservices players collection)
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/backfill-gamertags ./cmd/backfill-gamertags
+# unidentified weapon trigger util
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/unidentified-weapon ./cmd/unidentified-weapon
 
 # ---- runtime stage ----
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -35,6 +37,7 @@ COPY --from=build /out/simulate /app/simulate
 COPY --from=build /out/seedhistory /app/seedhistory
 COPY --from=build /out/reconcile-squads /app/reconcile-squads
 COPY --from=build /out/backfill-gamertags /app/backfill-gamertags
+COPY --from=build /out/unidentified-weapon /app/unidentified-weapon
 COPY --from=build /src/cmd/simulate/scenarios /app/
 # Baked default config; MONGO_URI / MONGO_DATABASE / LISTENING_ADDRESS env vars override at runtime.
 COPY config.toml /app/config.toml
