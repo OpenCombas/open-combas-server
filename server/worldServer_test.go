@@ -1,6 +1,9 @@
 package server
 
-import "testing"
+import (
+	"ChromehoundsStatusServer/constants"
+	"testing"
+)
 
 // TestPresidentIDsAreInOwnNationBlock pins the per-nation president key ranges taken from
 // menu/WorldSituationInfoNewsPresidentParam.bin. PresidentID is a KEY into that table (client lookup
@@ -53,5 +56,38 @@ func TestClampPresidentIDRepairsLegacyDocs(t *testing.T) {
 		if got := clampPresidentID(c.code, c.in); got != c.want {
 			t.Errorf("clampPresidentID(%q, %d) = %d, want %d", c.code, c.in, got, c.want)
 		}
+	}
+}
+
+// TestNationUnknown57ReachesTheWire proves offset 57 round-trips from a stored nation doc to the wire
+// byte, so an in-game test of that field measures the CLIENT's behaviour rather than our plumbing.
+//
+// Byte 57 sits inside the nation record's trailing "C3" schema group (56 PresidentID, 57 ?, 58 DeadFlag),
+// so the client genuinely deserializes it -- it is not padding. It is the only per-nation byte we have
+// never identified, and the unidentified weapon is a per-nation state, which is why it is a candidate for
+// the map-state selector. Nothing here claims it IS that; this only guarantees a set value arrives.
+func TestNationUnknown57ReachesTheWire(t *testing.T) {
+	nations := defaultNations()
+	nations[2].Unknown57 = 1 // Sal Kar
+
+	state := newWorldState([16]byte{}, [8]byte{}, nations)
+	buf := encodeToBuffer(state, constants.WorldResponseSize, t)
+	body := buf[constants.MinHelloMessageSize:]
+
+	// body: WorldHeader(28) + 3 nation records of 60 bytes.
+	const nationBase, nationStride = 28, 60
+	for i, want := range []byte{0, 0, 1} {
+		off := nationBase + i*nationStride + 57
+		if got := body[off]; got != want {
+			t.Errorf("nation %d byte57 at body[%d] = %d, want %d", i, off, got, want)
+		}
+	}
+	// Sanity: the neighbouring bytes in the same C3 group must be undisturbed.
+	salKar := nationBase + 2*nationStride
+	if got := body[salKar+56]; got != presidentSalKarFirst {
+		t.Errorf("Sal Kar PresidentID = %d, want %d (byte57 must not disturb it)", got, presidentSalKarFirst)
+	}
+	if got := body[salKar+58]; got != 0 {
+		t.Errorf("Sal Kar DeadFlag = %d, want 0", got)
 	}
 }

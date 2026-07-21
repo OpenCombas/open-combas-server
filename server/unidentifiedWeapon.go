@@ -24,13 +24,23 @@ import (
 //	Morskoj 'B' -> East Salma Woods     (area 17, map 4)  appear 48  destroyed 51  withdrawn 82
 //	Sal Kar 'C' -> South Cemo Oil Field (area 18, map 4)  appear 49  destroyed 52  withdrawn 83
 //
-// SCOPE. This emits the NEWS and records the DEPLOYMENT (Battlefield.WeaponNation), which raises
-// マップロックフラグ on that battlefield. What is NOT enforced yet is the ban itself: nothing stops the
-// owning nation's players from deploying there, because that gate is in the client's mission-select path,
-// not in anything we serve. So the ban is currently advertised but not enforced.
+// SCOPE. This emits the NEWS and records the DEPLOYMENT (Battlefield.WeaponNation). The deployment is
+// currently BOOKKEEPING ONLY -- it changes nothing the client can see.
 //
-// The deployment flag is also how we test whether マップロックフラグ selects the battlefield preview
-// variant on the area-info page -- see toAreaMapRecord for that hypothesis.
+// マップロックフラグ was tried as the map-state lever and REJECTED by testing (2026-07-21): it does not
+// switch the area-info preview to the _01 variant, it just closes the battlefield to every nation
+// including the attackers, making the weapon unkillable. WeaponNation therefore does not feed it.
+//
+// WHAT THE MISSION ACTUALLY IS (Event/lua/JIT/event_201..203.lua, retail): a host-authoritative boss
+// encounter with a 600s countdown, one per nation --
+//
+//	201 Tarakia  boss actor c0511_000  (Remo 0020)
+//	202 Morskoj  boss actor c0521_000  (Remo 0030)
+//	203 Sal Kar  boss actor c0531_000  (Remo 0040)
+//
+// Those scripts run at mission LAUNCH, so they show what the mission is, not how a battlefield is put into
+// the state. The selector remains unfound: it is in neither the area (196), area-info (197) nor
+// battlefield-detail (198) records, all of whose schemas are fully accounted for.
 
 // UnidentifiedWeaponPhase is one stage of a weapon's lifecycle.
 type UnidentifiedWeaponPhase int
@@ -67,8 +77,8 @@ func (p UnidentifiedWeaponPhase) String() string {
 }
 
 // UnidentifiedWeaponSite is the fixed deployment site for one nation's weapon. AreaID/MapID are the
-// battlefield the story names; they are informational here (the news text needs no ids) but are what a
-// future mercenary-ban implementation would lock.
+// battlefield the story names -- the news text needs no ids, but they identify the map whose _01 variant
+// the state is supposed to select, and the battlefield a future ban would gate.
 type UnidentifiedWeaponSite struct {
 	Nation      byte
 	NationName  string
@@ -163,12 +173,11 @@ func (r *WorldRepository) RecordUnidentifiedWeaponEvent(ctx context.Context, nat
 	return row, r.RecordEvent(ctx, EventRecord{CreatedAt: when.Unix(), TemplateID: row})
 }
 
-// SetWeaponDeployed marks a nation's weapon as deployed on its fixed battlefield, raising
-// マップロックフラグ for that map. Returns the battlefield it touched.
+// SetWeaponDeployed records a nation's weapon as deployed on its fixed battlefield. Returns the site.
 //
-// This does NOT set Battlefield.Locked: that flag closes a battlefield to every nation, whereas a weapon
-// bans only its owner's mercenaries. Rival nations must keep fighting here -- destroying the weapon is the
-// point -- so the deployment is recorded as WeaponNation instead.
+// This is BOOKKEEPING ONLY today: it raises no wire flag and changes nothing the client sees. It does not
+// set Battlefield.Locked, and it deliberately no longer feeds マップロックフラグ -- doing so was tested
+// and closed the battlefield to the attackers, making the weapon unkillable.
 func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
 	site, ok := UnidentifiedWeaponSiteFor(nation)
 	if !ok {
@@ -187,8 +196,7 @@ func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte) (U
 	return site, nil
 }
 
-// ClearWeaponDeployed removes a nation's weapon deployment, lowering マップロックフラグ unless the
-// battlefield is also capture-locked.
+// ClearWeaponDeployed removes a nation's weapon deployment record.
 func (r *WorldRepository) ClearWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
 	site, ok := UnidentifiedWeaponSiteFor(nation)
 	if !ok {

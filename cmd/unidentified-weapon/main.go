@@ -15,16 +15,12 @@
 //	go run ./cmd/unidentified-weapon -nation B -phase withdraw -apply
 //	go run ./cmd/unidentified-weapon -status                       # what each nation is currently doing
 //
-// Deploying also sets Battlefield.WeaponNation, which raises マップロックフラグ on that battlefield;
-// destroy/withdraw clears it. Use -news-only to publish a story without touching world state.
+// Deploying also records Battlefield.WeaponNation. That is BOOKKEEPING ONLY -- it raises no wire flag and
+// the client cannot currently see it. Use -news-only to skip it.
 //
-// WHAT IS AND IS NOT ENFORCED. The ban is advertised, not enforced: nothing stops the owning nation's
-// players from deploying there, because that gate lives in the client's mission-select path. Rival nations
-// are deliberately left free to fight here -- Battlefield.Locked is NOT set, since that would close the
-// battlefield to everyone and make the weapon impossible to destroy.
-//
-// マップロックフラグ may ALSO drive the battlefield preview image on the area-info page (the "_01" map
-// variant); that is an untested hypothesis and deploying a weapon is how to test it. See toAreaMapRecord.
+// マップロックフラグ was tried as the map-state lever and REJECTED by testing (2026-07-21): it does not
+// switch the area-info preview to the _01 variant, it closes the battlefield to every nation including the
+// attackers, which made the weapon unkillable. The real selector is still unfound.
 package main
 
 import (
@@ -106,12 +102,12 @@ func main() {
 		logging.Warn.Printf("[WEAPON] %s (proceeding: -force)", problem)
 	}
 
-	effect := "raises マップロックフラグ on that battlefield"
+	effect := "records deployment (bookkeeping only -- no client-visible effect)"
 	if phase != server.WeaponAppears {
-		effect = "lowers マップロックフラグ"
+		effect = "clears deployment record"
 	}
 	if *newsOnly {
-		effect = "news only -- battlefield state untouched"
+		effect = "news only -- deployment record untouched"
 	}
 	logging.Info.Printf("[WEAPON] %s (%c) weapon %s at %s (area %d map %d) -- WORLD_NEWS row %d; %s",
 		site.NationName, site.Nation, phase, site.Battlefield, site.AreaID, site.MapID, row, effect)
@@ -134,8 +130,8 @@ func main() {
 		if err != nil {
 			logging.Error.Fatalf("[WEAPON] battlefield state update failed (no news published): %v", err)
 		}
-		logging.Info.Printf("[WEAPON] battlefield %d/%d マップロックフラグ %s",
-			site.AreaID, site.MapID, map[bool]string{true: "RAISED", false: "lowered"}[phase == server.WeaponAppears])
+		logging.Info.Printf("[WEAPON] battlefield %d/%d deployment record %s",
+			site.AreaID, site.MapID, map[bool]string{true: "set", false: "cleared"}[phase == server.WeaponAppears])
 	}
 
 	if _, err := repo.RecordUnidentifiedWeaponEvent(ctx, code, phase, time.Now()); err != nil {

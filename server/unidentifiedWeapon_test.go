@@ -84,30 +84,26 @@ func TestParseWeaponPhase(t *testing.T) {
 	}
 }
 
-// TestWeaponLockRaisesWireFlagWithoutClosingBattlefield pins the distinction that makes the weapon work:
-// a deployment raises マップロックフラグ on the wire, but must NOT set Battlefield.Locked.
+// TestWeaponDeploymentDoesNotLockTheBattlefield pins a MEASURED result, not a design preference.
 //
-// Locked closes a battlefield to EVERY nation (battleApplier drops any report for it). A weapon bans only
-// its owner's mercenaries -- rivals have to keep fighting there, because destroying the weapon is the whole
-// point of the story. Setting Locked would make the weapon permanent and the "destroyed" news unreachable.
-func TestWeaponLockRaisesWireFlagWithoutClosingBattlefield(t *testing.T) {
+// マップロックフラグ was tried as the weapon's map-state selector on 2026-07-21. It does not switch the
+// area-info preview to the _01 variant; it closes the battlefield to EVERY nation, including the attackers
+// whose whole job is to destroy the weapon. Raising it for a deployment made the weapon unkillable.
+//
+// So a weapon deployment must leave both the wire flag and Locked alone. If someone reintroduces the
+// coupling because "the weapon locks the battlefield" reads true in the news text, this fails.
+func TestWeaponDeploymentDoesNotLockTheBattlefield(t *testing.T) {
 	weapon := Battlefield{AreaID: 18, MapID: 4, WeaponNation: "C"}
-	if got := weapon.toAreaMapRecord().MapLockFlag; got != 1 {
-		t.Errorf("weapon deployment MapLockFlag = %d, want 1", got)
+	if got := weapon.toAreaMapRecord().MapLockFlag; got != 0 {
+		t.Errorf("weapon deployment MapLockFlag = %d, want 0 (raising it locks out the attackers)", got)
 	}
 	if weapon.Locked {
-		t.Error("a weapon deployment must not set Locked: that would close the battlefield to its attackers")
+		t.Error("a weapon deployment must not set Locked")
 	}
 
-	// Capture lock raises the same wire byte -- the client cannot tell them apart, which is why the
-	// preview-variant hypothesis applies to both.
+	// Capture locks still raise it -- that is what the byte is actually for.
 	captured := Battlefield{AreaID: 1, MapID: 1, Locked: true, DefeatedNation: "A"}
 	if got := captured.toAreaMapRecord().MapLockFlag; got != 1 {
 		t.Errorf("capture lock MapLockFlag = %d, want 1", got)
-	}
-
-	clear := Battlefield{AreaID: 1, MapID: 2}
-	if got := clear.toAreaMapRecord().MapLockFlag; got != 0 {
-		t.Errorf("unlocked battlefield MapLockFlag = %d, want 0", got)
 	}
 }

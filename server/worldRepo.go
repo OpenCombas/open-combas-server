@@ -794,17 +794,15 @@ func leadFaction(a, b, c int32) (idx int, level int32) {
 
 func (b Battlefield) toAreaMapRecord() AreaMapRecord {
 	leader, level := leadFaction(b.OccA, b.OccB, b.OccC)
-	// マップロックフラグ. Raised by a capture lock OR an active unidentified weapon.
+	// マップロックフラグ: capture locks ONLY.
 	//
-	// UNVERIFIED HYPOTHESIS worth knowing when reading a capture: this byte may ALSO select the battlefield
-	// preview variant on the area-info page. The client composes that image as "m<area>_<map>_<state>_cap.bin"
-	// and the three weapon battlefields are the only ones shipping a _01 image, which lines up with the
-	// weapon being the thing that locks them. If that holds, a capture-locked battlefield has always been
-	// requesting a _01 preview and silently falling back (sub_821402A8 retries with 0,0,0 when the file is
-	// missing), which would be invisible in logs. Setting this for a weapon is how we test it.
+	// TESTED AND REJECTED 2026-07-21: raising this for an active unidentified weapon does NOT switch the
+	// area-info preview to the map's _01 variant -- it just closes the battlefield to every nation,
+	// including the attackers who are supposed to destroy the weapon. So this byte means exactly what its
+	// name says and is NOT the map-state selector. WeaponNation deliberately does not feed it.
 	var lock byte
-	if b.Locked || b.WeaponNation != "" {
-		lock = 1
+	if b.Locked {
+		lock = 1 // tells the client this battlefield is closed to missions
 	}
 	return AreaMapRecord{
 		MapID:              int16(b.MapID),
