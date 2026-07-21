@@ -5,6 +5,7 @@ import (
 	"ChromehoundsStatusServer/constants"
 	"ChromehoundsStatusServer/logging"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"sync"
@@ -186,6 +187,45 @@ func newWorldState(xuid [16]byte, order [8]byte, nations [3]NationData) WorldSta
 	}
 }
 
+// nationTailIndex maps a country code to its slot in the World Tail's per-nation arrays (A=0, B=1, C=2),
+// matching the nation order the client copies (a5+212 -> weaponObj+260, 3x28). -1 for unknown.
+func nationTailIndex(code string) int {
+	switch code {
+	case "A":
+		return 0
+	case "B":
+		return 1
+	case "C":
+		return 2
+	}
+	return -1
+}
+
+// applyWeaponRecords writes each nation's WeaponRecordHex into the World Tail at offset 28*index. The Tail
+// begins at World body offset 208, so nation i's record occupies body [208+28i, 208+28i+28) -- the region
+// the client copies to its weapon-state object. A missing/short hex string leaves that nation's slot zero
+// (weapon inactive); a malformed one is logged and skipped rather than dropping the whole reply.
+func (s *worldServer) applyWeaponRecords(tail *[332]byte, recs []NationRecord) {
+	for _, r := range recs {
+		if r.WeaponRecordHex == "" {
+			continue
+		}
+		idx := nationTailIndex(r.CountryCode)
+		if idx < 0 {
+			continue
+		}
+		b, err := hex.DecodeString(r.WeaponRecordHex)
+		if err != nil {
+			logging.Warn.Printf("[%s] nation %s weaponRecordHex is not valid hex, skipping: %v", s.serverConfig.Label, r.CountryCode, err)
+			continue
+		}
+		if len(b) > weaponRecordBytes {
+			b = b[:weaponRecordBytes]
+		}
+		copy(tail[idx*weaponRecordBytes:], b)
+	}
+}
+
 func CreateWorldState(xuid [16]byte, order [8]byte) WorldState {
 	return newWorldState(xuid, order, defaultNations())
 }
@@ -225,7 +265,9 @@ func (s *worldServer) buildWorld(hi UserHelloMessage) WorldState {
 					}
 				}
 			}
-			return newWorldState(hi.Xuid, hi.Order, nations)
+			ws := newWorldState(hi.Xuid, hi.Order, nations)
+			s.applyWeaponRecords(&ws.Tail, recs)
+			return ws
 		}
 	}
 	return CreateWorldState(hi.Xuid, hi.Order)

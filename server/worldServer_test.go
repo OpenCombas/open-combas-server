@@ -1,6 +1,7 @@
 package server
 
 import (
+	"ChromehoundsStatusServer/config"
 	"ChromehoundsStatusServer/constants"
 	"testing"
 )
@@ -89,5 +90,58 @@ func TestNationUnknown57ReachesTheWire(t *testing.T) {
 	}
 	if got := body[salKar+58]; got != 0 {
 		t.Errorf("Sal Kar DeadFlag = %d, want 0", got)
+	}
+}
+
+// TestApplyWeaponRecords pins that a nation's WeaponRecordHex lands at the World Tail offset the taint
+// proved: Sal Kar (C) at Tail[56:84] (= World body 264, weaponObj+260 slot 2). This is the emission the
+// value-fuzz drives -- get the offset wrong and the fuzz maps the wrong nation.
+func TestApplyWeaponRecords(t *testing.T) {
+	s := &worldServer{messageServer: &messageServer{serverConfig: &config.ServerConfig{Label: "TEST"}}}
+	recs := []NationRecord{
+		{CountryCode: "A", WeaponRecordHex: "aa"},
+		{CountryCode: "C", WeaponRecordHex: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b"}, // 28 bytes 00..1b
+		{CountryCode: "B"}, // empty -> stays zero
+	}
+	var tail [332]byte
+	s.applyWeaponRecords(&tail, recs)
+
+	if tail[0] != 0xAA {
+		t.Errorf("nation A slot: tail[0] = %#x, want 0xAA", tail[0])
+	}
+	for k := 28; k < 56; k++ {
+		if tail[k] != 0 {
+			t.Errorf("nation B slot (empty) should be zero, tail[%d] = %#x", k, tail[k])
+		}
+	}
+	// Sal Kar's 28-byte ramp lands at Tail[56..83].
+	for k := 0; k < 28; k++ {
+		if got := tail[56+k]; got != byte(k) {
+			t.Errorf("Sal Kar record byte %d at tail[%d] = %#x, want %#x", k, 56+k, got, k)
+		}
+	}
+}
+
+// TestApplyWeaponRecordsTruncatesAndSkips: >28 bytes is truncated to the record width; bad hex is skipped
+// (leaving zeros) rather than dropping the reply.
+func TestApplyWeaponRecordsTruncatesAndSkips(t *testing.T) {
+	s := &worldServer{messageServer: &messageServer{serverConfig: &config.ServerConfig{Label: "TEST"}}}
+	long := ""
+	for i := 0; i < 40; i++ {
+		long += "ff"
+	}
+	recs := []NationRecord{
+		{CountryCode: "A", WeaponRecordHex: long},   // 40 bytes -> truncate to 28
+		{CountryCode: "B", WeaponRecordHex: "zzzz"}, // invalid hex -> skip
+	}
+	var tail [332]byte
+	s.applyWeaponRecords(&tail, recs)
+	if tail[27] != 0xFF || tail[28] != 0x00 {
+		t.Errorf("truncation: tail[27]=%#x tail[28]=%#x, want ff then 00 (28-byte cap)", tail[27], tail[28])
+	}
+	for k := 28; k < 56; k++ {
+		if tail[k] != 0 {
+			t.Fatalf("bad-hex nation B should stay zero, tail[%d]=%#x", k, tail[k])
+		}
 	}
 }

@@ -111,7 +111,18 @@ type NationRecord struct {
 	// While set the nation is "dissolved": it may only launch missions on its own HQ area until it
 	// recaptures it (which fires a revival event and clears this). "" == holding its capital.
 	HQLostTo string `bson:"hqLostTo,omitempty"`
+
+	// WeaponRecordHex is this nation's 28-byte UNIDENTIFIED-WEAPON record, hex-encoded, emitted into the
+	// World (195) message body at offset 208 + (nation index)*28 -- the region the client copies to its
+	// weapon-state object (proven 2026-07-21 by the provenance taint landing at weaponObj+260). Set it via
+	// the DB to drive the weapon without a rebuild; empty/short -> zero-padded (weapon inactive). It is a
+	// raw byte blob on purpose: the record's internal layout (which bytes derive deploy/HP) is still being
+	// mapped, so this stays a tunable blob until those fields are named. Over 28 bytes is truncated.
+	WeaponRecordHex string `bson:"weaponRecordHex,omitempty"`
 }
+
+// weaponRecordBytes is the wire length of one nation's weapon record within the World Tail.
+const weaponRecordBytes = 28
 
 // WorldRepository reads/writes the war-state collections on the shared MongoDB.
 type WorldRepository struct {
