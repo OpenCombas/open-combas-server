@@ -3,6 +3,9 @@ package server
 import "testing"
 
 func TestGradeFromRenown(t *testing.T) {
+	// Boundaries come from the retail Squad Rank / Renown Required table (see squadGradeLadder). Each
+	// tier is checked at its exact threshold and one renown below it, because an off-by-one here silently
+	// mislabels a squad's visible standing rather than failing anything.
 	cases := []struct {
 		name   string
 		renown int32
@@ -10,16 +13,26 @@ func TestGradeFromRenown(t *testing.T) {
 	}{
 		{"never fought", 0, squadGradeMin},
 		{"negative (corrupt/underflow)", -500, squadGradeMin},
-		{"one win, below the first rung", 150, squadGradeMin},
-		{"exactly grade 2", 300, 2},
-		{"just under grade 3", 499, 2},
-		{"exactly grade 3", 500, 3},
-		{"mid ladder", 2500, 6},
-		{"just under grade 10", 20999, 9},
-		{"exactly grade 10", 21000, 10},
-		{"just under the top", 99999, 12},
-		{"exactly the top", 100000, squadGradeMax},
-		{"far past the top stays capped", 5000000, squadGradeMax},
+		{"a few wins, still Rookie", 900, squadGradeMin},
+		{"just under Rookie+", 5999, squadGradeMin},
+		{"exactly Rookie+", 6000, 2},
+		{"just under Rookie++", 11999, 2},
+		{"exactly Rookie++", 12000, 3},
+		{"the tier jump: still Rookie++ at 29999", 29999, 3},
+		{"exactly Regular", 30000, 4},
+		{"exactly Regular+", 36000, 5},
+		{"exactly Regular++", 42000, 6},
+		{"just under Professional", 59999, 6},
+		{"exactly Professional", 60000, 7},
+		{"exactly Professional+", 66000, 8},
+		{"exactly Professional++", 72000, 9},
+		{"just under Master", 89999, 9},
+		{"exactly Master", 90000, 10},
+		{"exactly Master+", 96000, 11},
+		{"exactly Master++", 102000, 12},
+		{"just under Legend", 119999, 12},
+		{"exactly Legend", 120000, squadGradeMax},
+		{"far past Legend stays capped", 5000000, squadGradeMax},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

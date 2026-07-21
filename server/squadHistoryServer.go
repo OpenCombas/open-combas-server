@@ -40,23 +40,31 @@ import (
 // disband is a LOCAL UI leader action, not a combas message (server-side a squad disbands via the
 // 183-withdraw last-member path). See server.md S-Q22 (resolved).
 //
-// ONE wire detail is still UNCONFIRMED (server.md S-Q23), but it does not block enabling: the full-10
-// framing -- whether the client reads strictly until a type-0 record (needing an 11th terminator slot) or
-// caps at 10. We send 10 fixed slots with zero-filled (type-0) tails, which is safe for <10 events and
-// relies on the 10-cap when exactly full; and the +105/+108 area-vs-map arg order for type 6/7.
+// FRAMING (resolved 2026-07-20, sub_821C8F20): records start at status + 2, and the 10-record cap is real
+// -- the scan is `do { ... } while (i < 0xA)`, so no 11th terminator slot is needed. That closes the
+// full-10 half of S-Q23. Confirmed in-game: a type-4 event rendered "The squad grade has gone up to
+// Rookie+" with a correct 07/20/26 date.
+//
+// STILL UNCONFIRMED: the +105/+108 area-vs-map argument order for types 6/7 (battle events). Those two
+// ids feed sub_82193EE0(global, *(+105), *(+108)) and both are plausible map-name lookup args, so a swap
+// would surface as a WRONG map name rather than a blank or broken row -- it cannot be caught by framing
+// checks, only by comparing a rendered battle event against the area it was actually fought in.
 
 // historyRecord packs one event into its 134-byte wire record.
 //
-// ENDIANNESS. The two u16 fields are LITTLE-endian, like every other combas reply. sub_823B55E8 byte-SWAPS
-// each element in place after aligning it, and the console is big-endian, so a value that should read as N
-// must go on the wire byte-reversed. This file previously wrote them big-endian -- and its tests asserted
-// big-endian, so they passed while the screen was broken.
+// ENDIANNESS: LITTLE-endian, CONFIRMED in-game 2026-07-20. sub_823B55E8 byte-SWAPS each element in place
+// after aligning it, and the console is big-endian, so a value that should read as N goes on the wire
+// byte-reversed -- the same convention as every other combas reply. The C65 string blocks are unaffected;
+// 1-byte elements are not swapped.
 //
-// The failure that caused is worth recording because it is not obvious from the symptom: TYPE 2 written
-// big-endian reads back as 0x0200 = 512. That is non-zero, so the record is NOT treated as the list
-// terminator and the UI draws a row for it -- but 512 matches no known type, so nothing fills the row.
-// Hence "bars with no content" rather than an empty or truncated list. The C65 string blocks were always
-// fine: 1-byte elements are not swapped.
+// How it was confirmed, since it was asserted before it was tested: with the record framing fixed (see
+// buildHistoryResponse) the History screen rendered "07/20/26 12:31:38". A big-endian year would have read
+// 0xEA07 = 59911 and displayed 11. The date fields are single bytes and prove nothing either way, so the
+// YEAR is the only field in this record that distinguishes the two encodings.
+//
+// This file previously wrote both u16s big-endian AND its tests asserted big-endian, so they agreed with
+// each other and disagreed with the console -- which is why it survived. That was a real bug, but it was
+// NOT the cause of the "bars with no content" screen; the one-byte framing error below was.
 func historyRecord(ev SquadHistoryEvent) [constants.SquadHistoryRecordSize]byte {
 	var rec [constants.SquadHistoryRecordSize]byte
 	binary.LittleEndian.PutUint16(rec[0:2], uint16(ev.Type))

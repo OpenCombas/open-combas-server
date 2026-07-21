@@ -10,17 +10,17 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
-// Squad grade is derived from LIFETIME RENOWN alone (SquadStats.Renown.Total) on a log ladder: each grade
-// costs ~70% more renown than the one below it, topping out at 100,000 for grade 13.
+// Squad grade is derived from LIFETIME RENOWN alone (SquadStats.Renown.Total) against the RETAIL threshold
+// table, 0 for Rookie up to 120,000 for Legend. See squadGradeLadder for the values and their source.
 //
 // Lifetime rather than the season bucket: grade is a standing shown on the squad panel, and a seasonal
 // reset would floor every squad at rollover. The season bucket stays on the ranking board (1262), which is
 // where seasonal standing belongs.
 //
 // SCALE CONTEXT: renown per battle is a single byte in the battle report (`b[0x11C]`, so <= 255) and real
-// captures show ~150 for a win. So grade 13 is roughly 667 wins -- a lifetime ceiling, not a season goal.
-// The low grades are deliberately cheap (grade 2 at two wins) so a new squad sees movement early, while
-// 11 -> 13 is where it becomes a real commitment.
+// captures show ~150 for a win. So Rookie+ is ~40 wins and Legend ~800 -- a long lifetime climb, which is
+// what the retail curve intends. Do not "rebalance" this because early progress feels slow; the numbers
+// are the published ones and players compared their standing against them.
 //
 // This REPLACED a percentile-over-population model. An absolute ladder is a pure function of one number:
 // no population query, no index, and no staleness problem where one squad's win silently demotes another.
@@ -34,27 +34,42 @@ type gradeThreshold struct {
 	Renown int32
 }
 
-// squadGradeLadder is ordered HIGHEST FIRST -- gradeFromRenown takes the first threshold met. Values are a
-// geometric series from 300 to 100,000 (ratio ~1.6957), rounded to readable numbers.
+// squadGradeLadder is ordered HIGHEST FIRST -- gradeFromRenown takes the first threshold met.
 //
-// These cutoffs are OUR CHOICE: the original service's curve is not recoverable from the binary (the client
-// only renders FMG 5700+idx and never computes the index itself). Tune freely; the constraints are that
-// grades stay within squadGradeMin..squadGradeMax, thresholds strictly descend alongside grades, and the
-// lowest entry is squadGradeMin at 0 so every squad has a grade.
+// THESE ARE THE RETAIL VALUES, from an archived Chromehounds "Squad Rank / Renown Required" table
+// (logs/squad_grade/table.png). They are NOT ours to tune: a squad's grade is a visible standing that
+// players compared against published figures, so an invented curve mislabels every squad in the game.
+//
+// The grade INDEX is what goes on the wire (team header off 19) and the client renders FMG 5700+idx. Those
+// labels confirm the mapping independently -- 5701 "Rookie" .. 5713 "Legend", 13 grades, matching the
+// table's 12 rows plus Rookie as the implied floor:
+//
+//	idx  1 Rookie              0        idx  8 Professional+     66,000
+//	idx  2 Rookie+         6,000        idx  9 Professional++    72,000
+//	idx  3 Rookie++       12,000        idx 10 Master            90,000
+//	idx  4 Regular        30,000        idx 11 Master+           96,000
+//	idx  5 Regular+       36,000        idx 12 Master++         102,000
+//	idx  6 Regular++      42,000        idx 13 Legend           120,000
+//	idx  7 Professional   60,000
+//
+// The curve is tiered rather than geometric: within a tier the steps are +6,000, and each new tier jumps
+// (12,000 -> 30,000, 42,000 -> 60,000, 72,000 -> 90,000, 102,000 -> 120,000). An earlier version of this
+// file used an invented geometric series from 300 to 100,000, which put grade 2 at ~2 wins; the real
+// entry-level grade costs 6,000 renown, so that curve inflated every squad's standing by several grades.
 var squadGradeLadder = []gradeThreshold{
-	{13, 100000}, // ~667 wins
-	{12, 59000},
-	{11, 35000},
-	{10, 21000},
-	{9, 12000},
-	{8, 7100},
-	{7, 4200},
-	{6, 2500},
-	{5, 1500},
-	{4, 900},
-	{3, 500},
-	{2, 300}, // ~2 wins
-	{squadGradeMin, 0},
+	{13, 120000},       // Legend
+	{12, 102000},       // Master++
+	{11, 96000},        // Master+
+	{10, 90000},        // Master
+	{9, 72000},         // Professional++
+	{8, 66000},         // Professional+
+	{7, 60000},         // Professional
+	{6, 42000},         // Regular++
+	{5, 36000},         // Regular+
+	{4, 30000},         // Regular
+	{3, 12000},         // Rookie++
+	{2, 6000},          // Rookie+
+	{squadGradeMin, 0}, // Rookie -- every squad has a grade
 }
 
 // gradeFromRenown maps lifetime renown to a grade. Negative or zero renown yields squadGradeMin.
