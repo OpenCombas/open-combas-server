@@ -11,9 +11,15 @@
 //
 //	go run ./cmd/unidentified-weapon -nation B                     # DRY RUN: show the story, write nothing
 //	go run ./cmd/unidentified-weapon -nation B -apply              # deploy the weapon (news: "Appears")
+//	go run ./cmd/unidentified-weapon -nation B -missions 5 -apply  # deploy; auto-destroy after 5 attacks
 //	go run ./cmd/unidentified-weapon -nation B -phase destroy -apply
 //	go run ./cmd/unidentified-weapon -nation B -phase withdraw -apply
-//	go run ./cmd/unidentified-weapon -status                       # what each nation is currently doing
+//	go run ./cmd/unidentified-weapon -status                       # current state + hit progress
+//
+// -missions N sets how many successful destruction missions the weapon withstands before it auto-destroys.
+// Each such mission arrives as an area-99 battle report (WeaponBattleAreaID) with the weapon as the loser;
+// the server counts them (applyWeaponReport) and, on the Nth, clears the deployment and files the destroyed
+// story automatically. 0 (the default) means no auto-destroy -- remove it manually with -phase destroy.
 //
 // Deploying also records Battlefield.WeaponNation, which DRIVES THE CLIENT: the World (195) reply raises the
 // per-nation deploy byte for it, so the weapon actually appears on the war map (proven in-game 2026-07-21).
@@ -32,6 +38,7 @@ import (
 	"ChromehoundsStatusServer/server"
 	"context"
 	"flag"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -47,6 +54,7 @@ func main() {
 	status := flag.Bool("status", false, "report each nation's current weapon state and exit")
 	force := flag.Bool("force", false, "skip the transition check (e.g. destroy a weapon with no recorded deployment)")
 	newsOnly := flag.Bool("news-only", false, "publish the story without touching the battlefield's weapon state")
+	missions := flag.Int("missions", 0, "successful destruction missions the weapon withstands before it auto-destroys (0 = no auto-destroy; remove manually). Only meaningful with -phase appear.")
 	flag.Parse()
 
 	cfg := config.LoadConfig()
@@ -105,6 +113,9 @@ func main() {
 	}
 
 	effect := "deploys the weapon (raises the World deploy byte -- shows on the war map next refresh)"
+	if phase == server.WeaponAppears && *missions > 0 {
+		effect += fmt.Sprintf("; auto-destroys after %d successful mission(s)", *missions)
+	}
 	if phase != server.WeaponAppears {
 		effect = "clears deployment (weapon disappears next refresh)"
 	}
@@ -125,7 +136,7 @@ func main() {
 	if !*newsOnly {
 		var err error
 		if phase == server.WeaponAppears {
-			_, err = repo.SetWeaponDeployed(ctx, code)
+			_, err = repo.SetWeaponDeployed(ctx, code, int32(*missions))
 		} else {
 			_, err = repo.ClearWeaponDeployed(ctx, code)
 		}
@@ -191,11 +202,21 @@ func reportStatus(ctx context.Context, repo *server.WorldRepository) {
 			news = state.Last.String()
 		}
 
+		// Mission progress toward auto-destruction, read straight from the deployment doc.
+		progress := ""
+		if bf, berr := repo.BattlefieldByAreaMap(ctx, byte(site.AreaID), byte(site.MapID)); berr == nil && bf != nil && bf.WeaponNation == string(code) {
+			if bf.WeaponMissionsToDestroy > 0 {
+				progress = fmt.Sprintf("  hits: %d/%d", bf.WeaponHits, bf.WeaponMissionsToDestroy)
+			} else {
+				progress = fmt.Sprintf("  hits: %d (no auto-destroy)", bf.WeaponHits)
+			}
+		}
+
 		warn := ""
 		if (news == "DEPLOYED") != (flag == "SET") {
 			warn = "   <-- news and battlefield flag DISAGREE"
 		}
-		logging.Info.Printf("[WEAPON] %-8s (%c) news: %-9s  flag: %-10s  site: %s (%d/%d)%s",
-			site.NationName, code, news, flag, site.Battlefield, site.AreaID, site.MapID, warn)
+		logging.Info.Printf("[WEAPON] %-8s (%c) news: %-9s  flag: %-10s  site: %s (%d/%d)%s%s",
+			site.NationName, code, news, flag, site.Battlefield, site.AreaID, site.MapID, progress, warn)
 	}
 }

@@ -182,19 +182,52 @@ func (r *WorldRepository) RecordUnidentifiedWeaponEvent(ctx context.Context, nat
 	return row, r.RecordEvent(ctx, EventRecord{CreatedAt: when.Unix(), TemplateID: row})
 }
 
-// SetWeaponDeployed records a nation's weapon as deployed on its fixed battlefield. Returns the site.
+// WeaponBattleAreaID is the sentinel area id a weapon-destruction ("boss") mission reports itself under.
+// Confirmed 2026-07-21 from a live capture: a South Cemo weapon mission arrived as a 1214 battle report with
+// AreaID=99, MapID=4, the weapon as the LOSER (synthetic all-9s opponent team) and the attacking nation as
+// the winner. It is a real battlefield in no area, so applyWeaponReport handles area 99 specially rather
+// than trying to move occupation. Which nation's weapon it is comes from the loser nation, not the area.
+const WeaponBattleAreaID = 99
+
+// SetWeaponDeployed records a nation's weapon as deployed on its fixed battlefield, withstanding
+// missionsToDestroy successful attacks before it auto-destroys (0 = no auto-destroy; remove via the tool).
+// Resets the hit counter. Returns the site.
 //
 // This drives the client: buildWorld reads it (DeployedWeaponNations) and raises the World (195) per-nation
 // deploy byte, which lights the weapon on the war map. It does NOT set Battlefield.Locked and does not feed
 // マップロックフラグ -- that would close the battlefield to the attackers and make the weapon unkillable.
-func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
+func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte, missionsToDestroy int32) (UnidentifiedWeaponSite, error) {
+	site, ok := UnidentifiedWeaponSiteFor(nation)
+	if !ok {
+		return site, fmt.Errorf("unknown nation %q", string(nation))
+	}
+	set := bson.M{"weaponNation": string(site.Nation), "weaponHits": int32(0)}
+	update := bson.M{"$set": set}
+	if missionsToDestroy > 0 {
+		set["weaponMissionsToDestroy"] = missionsToDestroy
+	} else {
+		update["$unset"] = bson.M{"weaponMissionsToDestroy": ""}
+	}
+	res, err := r.battlefields.UpdateOne(ctx,
+		bson.M{"areaId": site.AreaID, "mapId": site.MapID}, update)
+	if err != nil {
+		return site, err
+	}
+	if res.MatchedCount == 0 {
+		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
+	}
+	return site, nil
+}
+
+// ClearWeaponDeployed removes a nation's weapon deployment record and its mission counters.
+func (r *WorldRepository) ClearWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
 	site, ok := UnidentifiedWeaponSiteFor(nation)
 	if !ok {
 		return site, fmt.Errorf("unknown nation %q", string(nation))
 	}
 	res, err := r.battlefields.UpdateOne(ctx,
 		bson.M{"areaId": site.AreaID, "mapId": site.MapID},
-		bson.M{"$set": bson.M{"weaponNation": string(site.Nation)}},
+		bson.M{"$unset": bson.M{"weaponNation": "", "weaponMissionsToDestroy": "", "weaponHits": ""}},
 	)
 	if err != nil {
 		return site, err
@@ -205,23 +238,25 @@ func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte) (U
 	return site, nil
 }
 
-// ClearWeaponDeployed removes a nation's weapon deployment record.
-func (r *WorldRepository) ClearWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
-	site, ok := UnidentifiedWeaponSiteFor(nation)
-	if !ok {
-		return site, fmt.Errorf("unknown nation %q", string(nation))
+// RecordWeaponHit registers one successful destruction mission against the nation's deployed weapon: it
+// atomically bumps the weapon's hit counter and returns the new count and the configured threshold. found is
+// false (and hits/threshold 0) when that nation has no weapon deployed -- a stray area-99 report, which the
+// caller ignores. The caller decides destruction (found && threshold > 0 && hits >= threshold); this only
+// counts, so the increment stays a single atomic write.
+func (r *WorldRepository) RecordWeaponHit(ctx context.Context, nation byte) (hits, threshold int32, found bool, err error) {
+	var bf Battlefield
+	e := r.battlefields.FindOneAndUpdate(ctx,
+		bson.M{"weaponNation": string(nation)},
+		bson.M{"$inc": bson.M{"weaponHits": int32(1)}},
+		options.FindOneAndUpdate().SetReturnDocument(options.After),
+	).Decode(&bf)
+	if errors.Is(e, mongo.ErrNoDocuments) {
+		return 0, 0, false, nil
 	}
-	res, err := r.battlefields.UpdateOne(ctx,
-		bson.M{"areaId": site.AreaID, "mapId": site.MapID},
-		bson.M{"$unset": bson.M{"weaponNation": ""}},
-	)
-	if err != nil {
-		return site, err
+	if e != nil {
+		return 0, 0, false, e
 	}
-	if res.MatchedCount == 0 {
-		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
-	}
-	return site, nil
+	return bf.WeaponHits, bf.WeaponMissionsToDestroy, true, nil
 }
 
 // DeployedWeaponNations returns the set of nations ('A'/'B'/'C') that currently have an unidentified

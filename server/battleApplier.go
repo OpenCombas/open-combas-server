@@ -40,7 +40,12 @@ func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
 	// out, so the war map, the squad ledger, and the summary log all agree.
 	res = scaleForCPU(res, s.cpuBattleScale)
 
-	if s.worldRepo != nil {
+	if s.worldRepo != nil && res.AreaID == WeaponBattleAreaID {
+		// A weapon-destruction (boss) mission reports under the sentinel area 99 with the weapon as the
+		// loser -- it moves no occupation, so handle it here instead of the normal battlefield path. Squad
+		// renown for the attacking side is still credited below, exactly as for any other mission.
+		s.applyWeaponReport(ctx, res)
+	} else if s.worldRepo != nil {
 		bf, err := s.worldRepo.BattlefieldByAreaMap(ctx, res.AreaID, res.MapID)
 		switch {
 		case err != nil:
@@ -79,6 +84,39 @@ func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
 	}
 	logging.Info.Printf("[%s] area %d/%d: winner %c/%s (+%d occ, +%d renown) vs %c/%s",
 		s.label, res.AreaID, res.MapID, res.WinnerNation, res.WinnerTeam, res.OccDelta, res.WinnerMerit, res.LoserNation, res.LoserTeam)
+}
+
+// applyWeaponReport handles a weapon-destruction (boss) mission report (area 99). The weapon is the LOSER;
+// the winner is the attacking nation. Each such report is one successful attack: it bumps the deployed
+// weapon's hit counter, and when the count reaches the configured threshold the weapon is destroyed --
+// its deployment is cleared (dropping the World deploy byte so it vanishes from the war map) and the
+// "destroyed" news is filed. A report for a nation with no weapon deployed is ignored.
+func (s *BattleApplier) applyWeaponReport(ctx context.Context, res BattleResult) {
+	nation := res.LoserNation
+	hits, threshold, found, err := s.worldRepo.RecordWeaponHit(ctx, nation)
+	if err != nil {
+		logging.Warn.Printf("[%s] weapon-hit record (%c) failed: %v", s.label, nation, err)
+		return
+	}
+	if !found {
+		logging.Info.Printf("[%s] weapon report (loser %c) but no weapon deployed for it; ignoring", s.label, nation)
+		return
+	}
+	logging.Info.Printf("[%s] unidentified weapon (%c) took hit %d/%d", s.label, nation, hits, threshold)
+	if threshold <= 0 || hits < threshold {
+		return // no auto-destroy configured, or not enough hits yet
+	}
+
+	// Threshold reached -> destroy. Clearing the deployment drops the World deploy byte (weapon disappears).
+	if _, err := s.worldRepo.ClearWeaponDeployed(ctx, nation); err != nil {
+		logging.Warn.Printf("[%s] weapon clear (%c) failed: %v", s.label, nation, err)
+	}
+	if s.generateEvents {
+		if _, err := s.worldRepo.RecordUnidentifiedWeaponEvent(ctx, nation, WeaponDestroyed, time.Now()); err != nil {
+			logging.Warn.Printf("[%s] weapon destroyed event (%c) failed: %v", s.label, nation, err)
+		}
+	}
+	logging.Info.Printf("[%s] EVENT: unidentified weapon (%c) DESTROYED after %d mission(s)", s.label, nation, hits)
 }
 
 // applyBattle applies one battle report to the world under the winner-takes-all capture model:

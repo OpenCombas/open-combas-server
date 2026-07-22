@@ -80,6 +80,13 @@ type Battlefield struct {
 	// Both states raise the same wire byte (マップロックフラグ, AreaMapRecord.MapLockFlag) -- see
 	// toAreaMapRecord.
 	WeaponNation string `bson:"weaponNation,omitempty"`
+	// WeaponMissionsToDestroy is how many successful destruction missions this deployed weapon withstands
+	// before it auto-destroys (0/unset = no auto-destroy; remove only via the tool). WeaponHits counts the
+	// successful attacks landed so far. Weapon missions arrive as area-99 battle reports where the weapon is
+	// the loser (see WeaponBattleAreaID / applyWeaponReport); each such report bumps WeaponHits, and when it
+	// reaches the threshold the deployment is cleared and the "destroyed" news fires. Both are set at deploy.
+	WeaponMissionsToDestroy int32 `bson:"weaponMissionsToDestroy,omitempty"`
+	WeaponHits              int32 `bson:"weaponHits,omitempty"`
 }
 
 // UnlockBattleThreshold is how many other battles the defeated nation must fight (anywhere, win or
