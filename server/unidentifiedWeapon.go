@@ -189,74 +189,113 @@ func (r *WorldRepository) RecordUnidentifiedWeaponEvent(ctx context.Context, nat
 // than trying to move occupation. Which nation's weapon it is comes from the loser nation, not the area.
 const WeaponBattleAreaID = 99
 
-// SetWeaponDeployed records a nation's weapon as deployed on its fixed battlefield, withstanding
-// missionsToDestroy successful attacks before it auto-destroys (0 = no auto-destroy; remove via the tool).
-// Resets the hit counter. Returns the site.
+// DURABILITY = OCCUPATION (proven in-game 2026-07-21). The weapon's durability bar is not a wire field of
+// its own -- the client renders it from the deployed battlefield's occupation total, exactly like capture
+// levels (which is why it "resets to full" when the served occupation is re-read on a map return). So we
+// model durability as the weapon site's occupation: a freshly deployed weapon sits at the nation's full
+// control (full bar), each successful attack drains that occupation, and destruction restores the site to
+// the nation's 100% default (bar irrelevant -- the weapon is gone and normal missions resume).
+
+// SetWeaponDeployed deploys a nation's weapon on its fixed battlefield at FULL durability -- it sets the site
+// to that nation's 100% control (full occupation = full bar) and arms it to auto-destroy after
+// missionsToDestroy successful attacks (0 = no auto-destroy; remove via the tool). Resets the hit counter.
 //
-// This drives the client: buildWorld reads it (DeployedWeaponNations) and raises the World (195) per-nation
-// deploy byte, which lights the weapon on the war map. It does NOT set Battlefield.Locked and does not feed
-// マップロックフラグ -- that would close the battlefield to the attackers and make the weapon unkillable.
+// buildWorld reads the deployment (DeployedWeaponNations) and raises the World (195) per-nation deploy byte,
+// which lights the weapon on the war map. It does NOT set Battlefield.Locked and does not feed マップロック
+// フラグ -- that would close the battlefield to the attackers and make the weapon unkillable.
 func (r *WorldRepository) SetWeaponDeployed(ctx context.Context, nation byte, missionsToDestroy int32) (UnidentifiedWeaponSite, error) {
 	site, ok := UnidentifiedWeaponSiteFor(nation)
 	if !ok {
 		return site, fmt.Errorf("unknown nation %q", string(nation))
 	}
-	set := bson.M{"weaponNation": string(site.Nation), "weaponHits": int32(0)}
+	bf, err := r.BattlefieldByAreaMap(ctx, byte(site.AreaID), byte(site.MapID))
+	if err != nil {
+		return site, err
+	}
+	if bf == nil {
+		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
+	}
+	// Full durability = the weapon nation at 100% of the site (occupation = capacity), others zero.
+	set := bson.M{
+		"weaponNation": string(site.Nation), "weaponHits": int32(0),
+		"occA": int32(0), "occB": int32(0), "occC": int32(0), occField(site.Nation): bf.Capacity,
+	}
 	update := bson.M{"$set": set}
 	if missionsToDestroy > 0 {
 		set["weaponMissionsToDestroy"] = missionsToDestroy
 	} else {
 		update["$unset"] = bson.M{"weaponMissionsToDestroy": ""}
 	}
-	res, err := r.battlefields.UpdateOne(ctx,
-		bson.M{"areaId": site.AreaID, "mapId": site.MapID}, update)
-	if err != nil {
-		return site, err
-	}
-	if res.MatchedCount == 0 {
-		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
-	}
-	return site, nil
+	_, err = r.battlefields.UpdateOne(ctx, bson.M{"areaId": site.AreaID, "mapId": site.MapID}, update)
+	return site, err
 }
 
-// ClearWeaponDeployed removes a nation's weapon deployment record and its mission counters.
+// ClearWeaponDeployed removes a nation's weapon and restores the site to that nation's default 100% control
+// (so normal missions resume) -- the same reset applied on auto-destruction. A no-op on occupation if no
+// weapon was deployed there.
 func (r *WorldRepository) ClearWeaponDeployed(ctx context.Context, nation byte) (UnidentifiedWeaponSite, error) {
 	site, ok := UnidentifiedWeaponSiteFor(nation)
 	if !ok {
 		return site, fmt.Errorf("unknown nation %q", string(nation))
 	}
-	res, err := r.battlefields.UpdateOne(ctx,
-		bson.M{"areaId": site.AreaID, "mapId": site.MapID},
-		bson.M{"$unset": bson.M{"weaponNation": "", "weaponMissionsToDestroy": "", "weaponHits": ""}},
-	)
+	bf, err := r.BattlefieldByAreaMap(ctx, byte(site.AreaID), byte(site.MapID))
 	if err != nil {
 		return site, err
 	}
-	if res.MatchedCount == 0 {
+	if bf == nil {
 		return site, fmt.Errorf("battlefield %d/%d (%s) not found in the database", site.AreaID, site.MapID, site.Battlefield)
 	}
-	return site, nil
+	update := bson.M{"$unset": bson.M{"weaponNation": "", "weaponMissionsToDestroy": "", "weaponHits": ""}}
+	if bf.WeaponNation != "" {
+		update["$set"] = bson.M{"occA": int32(0), "occB": int32(0), "occC": int32(0), occField(bf.WeaponNation[0]): bf.Capacity}
+	}
+	_, err = r.battlefields.UpdateOne(ctx, bson.M{"areaId": site.AreaID, "mapId": site.MapID}, update)
+	return site, err
 }
 
-// RecordWeaponHit registers one successful destruction mission against the nation's deployed weapon: it
-// atomically bumps the weapon's hit counter and returns the new count and the configured threshold. found is
-// false (and hits/threshold 0) when that nation has no weapon deployed -- a stray area-99 report, which the
-// caller ignores. The caller decides destruction (found && threshold > 0 && hits >= threshold); this only
-// counts, so the increment stays a single atomic write.
-func (r *WorldRepository) RecordWeaponHit(ctx context.Context, nation byte) (hits, threshold int32, found bool, err error) {
+// ApplyWeaponHit registers one successful destruction mission against the nation's deployed weapon and drives
+// the durability model in a single step:
+//   - not deployed for that nation -> found=false (a stray area-99 report the caller ignores);
+//   - with a mission threshold, it drains the site's occupation to capacity*(N-hits)/N so the durability bar
+//     steps down evenly, and on the Nth hit destroys the weapon: the deployment clears and the site snaps
+//     back to the nation's 100% default (destroyed=true) so normal missions resume there;
+//   - with no threshold (0), it only counts the hit (the weapon persists; remove it with the tool).
+func (r *WorldRepository) ApplyWeaponHit(ctx context.Context, nation byte) (hits, threshold int32, destroyed, found bool, err error) {
 	var bf Battlefield
-	e := r.battlefields.FindOneAndUpdate(ctx,
-		bson.M{"weaponNation": string(nation)},
-		bson.M{"$inc": bson.M{"weaponHits": int32(1)}},
-		options.FindOneAndUpdate().SetReturnDocument(options.After),
-	).Decode(&bf)
+	e := r.battlefields.FindOne(ctx, bson.M{"weaponNation": string(nation)}).Decode(&bf)
 	if errors.Is(e, mongo.ErrNoDocuments) {
-		return 0, 0, false, nil
+		return 0, 0, false, false, nil
 	}
 	if e != nil {
-		return 0, 0, false, e
+		return 0, 0, false, false, e
 	}
-	return bf.WeaponHits, bf.WeaponMissionsToDestroy, true, nil
+	found = true
+	hits = bf.WeaponHits + 1
+	threshold = bf.WeaponMissionsToDestroy
+	field := occField(nation)
+	if field == "" {
+		return hits, threshold, false, true, fmt.Errorf("unknown nation %q", string(nation))
+	}
+
+	if threshold > 0 && hits >= threshold {
+		// Destroyed: clear the weapon and restore the site to the nation's 100% default control.
+		destroyed = true
+		_, err = r.battlefields.UpdateOne(ctx,
+			bson.M{"areaId": bf.AreaID, "mapId": bf.MapID},
+			bson.M{
+				"$set":   bson.M{"occA": int32(0), "occB": int32(0), "occC": int32(0), field: bf.Capacity},
+				"$unset": bson.M{"weaponNation": "", "weaponMissionsToDestroy": "", "weaponHits": ""},
+			})
+		return hits, threshold, destroyed, found, err
+	}
+
+	set := bson.M{"weaponHits": hits}
+	if threshold > 0 {
+		// Durability bar = occupation: drain proportionally toward zero over the N missions.
+		set[field] = int32(int64(bf.Capacity) * int64(threshold-hits) / int64(threshold))
+	}
+	_, err = r.battlefields.UpdateOne(ctx, bson.M{"areaId": bf.AreaID, "mapId": bf.MapID}, bson.M{"$set": set})
+	return hits, threshold, false, found, err
 }
 
 // DeployedWeaponNations returns the set of nations ('A'/'B'/'C') that currently have an unidentified

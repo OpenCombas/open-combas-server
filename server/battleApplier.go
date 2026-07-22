@@ -93,30 +93,28 @@ func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
 // "destroyed" news is filed. A report for a nation with no weapon deployed is ignored.
 func (s *BattleApplier) applyWeaponReport(ctx context.Context, res BattleResult) {
 	nation := res.LoserNation
-	hits, threshold, found, err := s.worldRepo.RecordWeaponHit(ctx, nation)
+	hits, threshold, destroyed, found, err := s.worldRepo.ApplyWeaponHit(ctx, nation)
 	if err != nil {
-		logging.Warn.Printf("[%s] weapon-hit record (%c) failed: %v", s.label, nation, err)
+		logging.Warn.Printf("[%s] weapon-hit (%c) failed: %v", s.label, nation, err)
 		return
 	}
 	if !found {
 		logging.Info.Printf("[%s] weapon report (loser %c) but no weapon deployed for it; ignoring", s.label, nation)
 		return
 	}
-	logging.Info.Printf("[%s] unidentified weapon (%c) took hit %d/%d", s.label, nation, hits, threshold)
-	if threshold <= 0 || hits < threshold {
-		return // no auto-destroy configured, or not enough hits yet
+	logging.Info.Printf("[%s] unidentified weapon (%c) took hit %d/%d (durability draining)", s.label, nation, hits, threshold)
+	if !destroyed {
+		return
 	}
 
-	// Threshold reached -> destroy. Clearing the deployment drops the World deploy byte (weapon disappears).
-	if _, err := s.worldRepo.ClearWeaponDeployed(ctx, nation); err != nil {
-		logging.Warn.Printf("[%s] weapon clear (%c) failed: %v", s.label, nation, err)
-	}
+	// Destroyed on this hit: ApplyWeaponHit already cleared the deployment (dropping the World deploy byte)
+	// and restored the site to the nation's 100% default. File the destroyed story.
 	if s.generateEvents {
 		if _, err := s.worldRepo.RecordUnidentifiedWeaponEvent(ctx, nation, WeaponDestroyed, time.Now()); err != nil {
 			logging.Warn.Printf("[%s] weapon destroyed event (%c) failed: %v", s.label, nation, err)
 		}
 	}
-	logging.Info.Printf("[%s] EVENT: unidentified weapon (%c) DESTROYED after %d mission(s)", s.label, nation, hits)
+	logging.Info.Printf("[%s] EVENT: unidentified weapon (%c) DESTROYED after %d mission(s); site restored to %c 100%%", s.label, nation, hits, nation)
 }
 
 // applyBattle applies one battle report to the world under the winner-takes-all capture model:
