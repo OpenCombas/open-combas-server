@@ -167,6 +167,9 @@ func main() {
 			case config.LotInfo:
 				srv := server.NewLotInfoServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
+			case config.Allegiance:
+				srv := server.NewAllegianceServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg), squadRepo)
+				go srv.Run()
 			default:
 				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)
 			}

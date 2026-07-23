@@ -829,6 +829,42 @@ func (r *SquadRepository) findSquad(ctx context.Context, filter bson.M) (*Squad,
 	return &sq, nil
 }
 
+// Allegiance-change status bytes, exactly as the client's msgCode-201 parser sub_823BE000 reads them from
+// the first response body byte: '1' Complete, '2' "Demand Same As Current State", anything else "Unknown
+// Error". allegianceError is any non-1/2 value.
+const (
+	allegianceComplete  byte = '1'
+	allegianceSameState byte = '2'
+	allegianceError     byte = '9'
+)
+
+// ChangeAllegiance moves a squad to a new nation ('A' Tarakia / 'B' Morskoj / 'C' Sal Kar) -- the
+// season-start allegiance switch (msgCode 201), which is DISTINCT from deadFlag-driven defection. It returns
+// the wire status byte: '1' if the faction was changed, '2' if the squad already belongs to that nation
+// (idempotent -- a repeated request is "same state", not a fresh change), and allegianceError ('9' ->
+// "Unknown Error") for an unknown squad or an out-of-range nation. A non-nil error is reserved for genuine
+// datastore faults so the caller can distinguish "reject the request" from "we failed to serve it".
+func (r *SquadRepository) ChangeAllegiance(ctx context.Context, teamID string, nation byte) (byte, error) {
+	if nation < 'A' || nation > 'C' {
+		return allegianceError, nil // bad target nation -> Unknown Error (a client/protocol issue, not ours)
+	}
+	sq, err := r.SquadByTeamID(ctx, teamID)
+	if err != nil {
+		return allegianceError, err // datastore fault
+	}
+	if sq == nil {
+		return allegianceError, nil // no such squad -> Unknown Error
+	}
+	if len(sq.Faction) > 0 && sq.Faction[0] == nation {
+		return allegianceSameState, nil // already this nation
+	}
+	if _, err := r.squads.UpdateOne(ctx, bson.M{"teamId": teamID}, bson.M{"$set": bson.M{"faction": string(nation)}}); err != nil {
+		return allegianceError, err // datastore fault
+	}
+	logging.Info.Printf("[SQUAD] allegiance change: %s %q -> %q", teamID, sq.Faction, string(nation))
+	return allegianceComplete, nil
+}
+
 // CreateSquad assigns a team id, inserts the squad with the leader as its sole member, and links the
 // leader's profile to the new team.
 func (r *SquadRepository) CreateSquad(ctx context.Context, name, faction string, leader CombasProfile) (*Squad, error) {
