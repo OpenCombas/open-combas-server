@@ -25,6 +25,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/reconci
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/backfill-gamertags ./cmd/backfill-gamertags
 # unidentified weapon trigger util
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/unidentified-weapon ./cmd/unidentified-weapon
+# unidentified weapon trigger util
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/maintenance ./cmd/maintenance
 
 # ---- runtime stage ----
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -38,6 +40,7 @@ COPY --from=build /out/seedhistory /app/seedhistory
 COPY --from=build /out/reconcile-squads /app/reconcile-squads
 COPY --from=build /out/backfill-gamertags /app/backfill-gamertags
 COPY --from=build /out/unidentified-weapon /app/unidentified-weapon
+COPY --from=build /out/maintenance /app/maintenance
 COPY --from=build /src/cmd/simulate/scenarios /app/
 # Baked default config; MONGO_URI / MONGO_DATABASE / LISTENING_ADDRESS env vars override at runtime.
 COPY config.toml /app/config.toml
