@@ -59,6 +59,12 @@ func newAreaInfoState(xuid [16]byte, order [8]byte, areaID byte, maps [6]AreaMap
 	if fierce {
 		battleFlag = 1 // 激戦エリアフラグ: >30% of this area's battle reports have been PvP
 	}
+	// Between seasons the war has not started: lock EVERY map for deployment (the allegiance-change window).
+	if SeasonLocked() {
+		for i := range maps {
+			maps[i].MapLockFlag = 1 // マップロックフラグ: closed to missions
+		}
+	}
 	return AreaInfoState{
 		Header:     CreateHeader(xuid, order),
 		World:      worldHeaderNow(),

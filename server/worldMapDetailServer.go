@@ -68,9 +68,19 @@ type worldMapDetailServer struct {
 	repo *WorldRepository // nil when Mongo is disabled -> static model
 }
 
-// mapRecord resolves the AreaMapRecord for one battlefield (area, map): from Mongo when wired (so it
-// matches the area-info view and the reset war state), falling back to the static model on miss/error.
+// mapRecord resolves one battlefield's AreaMapRecord and applies the between-seasons lock: while the season
+// has not started, the map is locked for deployment (matching the area-info view).
 func (s *worldMapDetailServer) mapRecord(areaID, mapID byte) AreaMapRecord {
+	rec := s.resolveMapRecord(areaID, mapID)
+	if SeasonLocked() {
+		rec.MapLockFlag = 1
+	}
+	return rec
+}
+
+// resolveMapRecord fetches the record from Mongo when wired (so it matches the area-info view and the reset
+// war state), falling back to the static model on miss/error.
+func (s *worldMapDetailServer) resolveMapRecord(areaID, mapID byte) AreaMapRecord {
 	if s.repo != nil {
 		readCtx, cancel := context.WithTimeout(s.ctx, worldReadTimeout)
 		defer cancel()

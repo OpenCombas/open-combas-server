@@ -36,6 +36,13 @@ func NewBattleApplier(worldRepo *WorldRepository, squadRepo *SquadRepository, ge
 // mutation (unless the fought battlefield is locked, in which case the report is ignored) and credits
 // squad renown. Safe to call outside the network server.
 func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
+	// Between seasons every map is locked for deployment, so no legitimate battle report can arrive. Drop
+	// any that do (a stray/replayed packet) rather than let it advance the freshly-reset war before it opens.
+	if SeasonLocked() {
+		logging.Info.Printf("[%s] season locked (not started); ignoring battle report for %d/%d", s.label, res.AreaID, res.MapID)
+		return
+	}
+
 	// A mission against a CPU/AI opponent is PvE: scale the winner's occupation + renown before res fans
 	// out, so the war map, the squad ledger, and the summary log all agree.
 	res = scaleForCPU(res, s.cpuBattleScale)

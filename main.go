@@ -55,6 +55,16 @@ func main() {
 				server.ApplySeasonNumber(n)
 				logging.Info.Printf("[MONGO] war season = %d", n)
 			}
+			// Load the between-seasons lockout: while the season has not started, all maps are locked for
+			// deployment (the allegiance-change window). It auto-expires at serve time when the start passes.
+			if ts, err := server.LoadSeasonStart(ctx, store); err != nil {
+				logging.Warn.Printf("[MONGO] season-start load failed: %v", err)
+			} else {
+				server.ApplySeasonStart(ts)
+				if server.SeasonLocked() {
+					logging.Info.Printf("[MONGO] season NOT started -- all maps locked for deployment until %s (allegiance-change window)", time.Unix(ts, 0).Format("2006-01-02 15:04 MST"))
+				}
+			}
 			defer func() {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
