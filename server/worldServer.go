@@ -75,7 +75,7 @@ type WorldState struct {
 // world / area / area-info responses.
 func worldHeaderNow() WorldHeader {
 	var seasonID [19]byte
-	copy(seasonID[:], "0001") // tunable; the client prints this as "Season ID: %s"
+	copy(seasonID[:], SeasonKey(SeasonNumber())) // server-wide war season (season.go / reset -season)
 	return WorldHeader{
 		Status:          0,
 		SeasonID:        seasonID,

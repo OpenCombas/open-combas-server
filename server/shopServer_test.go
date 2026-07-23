@@ -62,3 +62,28 @@ func TestShopResponseWireLayout(t *testing.T) {
 		t.Errorf("block1 item5 code = %q, want B005", e[8:12])
 	}
 }
+
+// TestLotInfoResponseSize pins the lot-info reply the parser sub_823BDED8 expects: 40 entries of 24 bytes
+// starting at body+4, total reply 996 bytes, and status byte 0.
+func TestLotInfoResponseSize(t *testing.T) {
+	if lotInfoResponseSize != 996 {
+		t.Fatalf("lotInfoResponseSize = %d, want 996", lotInfoResponseSize)
+	}
+	resp := buildMarkerLotInfo([16]byte{}, [8]byte{})
+	buf := make([]byte, lotInfoResponseSize)
+	n, err := binary.Encode(buf, binary.LittleEndian, resp)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if n != lotInfoResponseSize {
+		t.Fatalf("encoded %d bytes, want %d (hidden struct padding?)", n, lotInfoResponseSize)
+	}
+	body := buf[constants.MinHelloMessageSize:]
+	if body[0] != 0 {
+		t.Errorf("lot-info status byte must be 0, got %d", body[0])
+	}
+	// First entry Value 200000 at body+4 (LE int32).
+	if got := int32(binary.LittleEndian.Uint32(body[4:8])); got != 200000 {
+		t.Errorf("lot item0 value = %d, want 200000", got)
+	}
+}

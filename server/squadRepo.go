@@ -41,12 +41,12 @@ const (
 	teamSeqName = "team"
 	userSeqName = "user"
 	seasonID    = "0001" // the id-format season used in TeamID/UserID ("TM0001..."); not the war season
-
-	// currentSeason is the war season the stats are bucketed under and the ranking reports (the game's
-	// "current season", shown as season 14). Ingest and ranking must agree on this key. TODO: make this
-	// config/world-state driven rather than a constant.
-	currentSeason = "0014"
 )
+
+// currentSeason is the war season the stats are bucketed under and the ranking reports. Ingest and ranking
+// must agree on this key. It is DB-backed now (set by the reset tool's -season and loaded at startup via
+// ApplySeasonNumber); the default keeps the historical "0014" bucket. See season.go.
+var currentSeason = SeasonKey(defaultSeasonNumber)
 
 // CombasProfile is the persistent identity for one player.
 type CombasProfile struct {
@@ -66,6 +66,11 @@ type SquadMemberRecord struct {
 	Leader     bool   `bson:"leader"`
 	UserNumber int32  `bson:"userNumber"`
 	Rank       int32  `bson:"rank"`
+	// RenownContribution is how much of the squad's renown THIS member actually earned: each battle report
+	// names the pilots who fought (see BattleResult.WinnerUserIDs), and that battle's renown is split among
+	// them and added here. On withdraw the member takes exactly this back out of the squad's renown, so a
+	// member who never fought contributes and forfeits 0 -- unlike the old flat Renown/N share.
+	RenownContribution int32 `bson:"renownContribution,omitempty"`
 }
 
 // SquadSettings is the squad's editable configuration, uploaded via the config message (1205/1245).
@@ -245,31 +250,39 @@ func debitBucket(b StatBucket, season string, amount int32) (dTotal, dSeason int
 	return dTotal, dSeason
 }
 
-// departingMemberShare is one member's equal share of a renown bucket: renown is treated as a pool split
-// across the active roster, so a leaver takes 1/N of it. Integer division rounds the debit DOWN, which
-// deliberately favours the squad -- repeated join/leave churn can never drain a bucket below what the
-// squad actually earned. Non-positive buckets and rosters under 2 debit nothing.
-func departingMemberShare(bucket int32, memberCountBefore int) int32 {
-	if bucket <= 0 || memberCountBefore < 2 {
-		return 0
+// CreditMemberContributions splits one battle's renown among the pilots who actually fought (the report's
+// WinnerUserIDs) and adds each one's share to their per-member RenownContribution ledger. Equal split,
+// floored -- the remainder favours the squad, matching the debit's flooring. No-op for no fighters or
+// non-positive renown. A pilot in the report who is not on the roster simply matches nothing.
+func (r *SquadRepository) CreditMemberContributions(ctx context.Context, teamID string, userIDs []string, renown int32) error {
+	if renown <= 0 || len(userIDs) == 0 {
+		return nil
 	}
-	return bucket / int32(memberCountBefore)
+	share := renown / int32(len(userIDs))
+	if share <= 0 {
+		return nil
+	}
+	for _, uid := range userIDs {
+		// Positional $ updates the one member whose userId matches; each pilot appears once on the roster.
+		if _, err := r.squads.UpdateOne(ctx,
+			bson.M{"teamId": teamID, "members.userId": uid},
+			bson.M{"$inc": bson.M{"members.$.renownContribution": share}}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-// DebitDepartingMember removes a leaving member's share of the squad's renown. memberCountBefore is the
-// roster size INCLUDING the departing member.
+// DebitMemberContribution removes exactly the departing member's own tracked contribution from the squad's
+// renown (see SquadMemberRecord.RenownContribution). A member who never fought has 0 and costs the squad
+// nothing -- the fix for the old flat Renown/N debit that docked non-participants.
 //
-// The share is Renown/N, which is the unique decrement that leaves Renown-Per-Member unchanged:
-// (R - R/N)/(N-1) == R/N. That matters because the game ranks squads by exactly that metric (1262 KBN 3),
-// so a departure moves a squad's Renown and Capture-Points standing without distorting its per-member one.
-//
-// Both the running total and the current season bucket are debited, each floored at 0 -- the buckets can
+// Both the running total and the current season bucket are debited, each floored at 0: the buckets can
 // diverge (a squad that earned in an earlier season has a total larger than its season bucket), so the
-// decrement is computed per-bucket in Go rather than as a blind negative $inc, which could drive a bucket
-// negative and then rank the squad below squads that never played.
-func (r *SquadRepository) DebitDepartingMember(ctx context.Context, teamID string, memberCountBefore int, season string) error {
-	if memberCountBefore < 2 {
-		// Sole member leaving disbands the squad; its stats doc is orphaned and debiting it is pointless.
+// decrement is computed per-bucket in Go rather than as a blind negative $inc that could drive one negative
+// and rank the squad below squads that never played.
+func (r *SquadRepository) DebitMemberContribution(ctx context.Context, teamID string, contribution int32, season string) error {
+	if contribution <= 0 {
 		return nil
 	}
 	var stats SquadStats
@@ -280,8 +293,8 @@ func (r *SquadRepository) DebitDepartingMember(ctx context.Context, teamID strin
 		return err
 	}
 
-	dTotal := departingMemberShare(stats.Renown.Total, memberCountBefore)
-	dSeason := departingMemberShare(stats.Renown.BySeason[season], memberCountBefore)
+	dTotal := min(contribution, max(stats.Renown.Total, 0))
+	dSeason := min(contribution, max(stats.Renown.BySeason[season], 0))
 	if dTotal == 0 && dSeason == 0 {
 		return nil
 	}
@@ -586,7 +599,7 @@ func (r *SquadRepository) RemoveMember(ctx context.Context, teamID, xuid, userID
 	// and after the roster write: a failure here must not turn a completed withdraw into an error the
 	// client retries, since the member is already gone. Skipped when the squad disbanded (doc deleted).
 	if len(sq.Members) > 1 {
-		if err := r.DebitDepartingMember(ctx, teamID, len(sq.Members), currentSeason); err != nil {
+		if err := r.DebitMemberContribution(ctx, teamID, sq.Members[idx].RenownContribution, currentSeason); err != nil {
 			logging.Warn.Printf("renown debit failed for %s after member left: %v", teamID, err)
 		} else if _, err := r.RefreshSquadGrade(ctx, teamID); err != nil {
 			logging.Warn.Printf("grade refresh failed for %s after member left: %v", teamID, err)

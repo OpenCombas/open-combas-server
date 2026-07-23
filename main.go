@@ -45,6 +45,16 @@ func main() {
 		} else {
 			store = s
 			logging.Info.Printf("[MONGO] connected (database %q)", cfg.Mongo.Database)
+
+			// Load the server-wide war season (set by the reset tool) so the stats-aggregation buckets and
+			// the season-exposing replies (status, world) all reflect it. Best-effort: keep the default on
+			// a read error.
+			if n, err := server.LoadSeasonNumber(ctx, store); err != nil {
+				logging.Warn.Printf("[MONGO] season load failed, using default %d: %v", server.SeasonNumber(), err)
+			} else {
+				server.ApplySeasonNumber(n)
+				logging.Info.Printf("[MONGO] war season = %d", n)
+			}
 			defer func() {
 				shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
@@ -153,6 +163,9 @@ func main() {
 				go srv.Run()
 			case config.Shop:
 				srv := server.NewShopServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
+			case config.LotInfo:
+				srv := server.NewLotInfoServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
 			default:
 				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)

@@ -15,6 +15,7 @@ import (
 	"ChromehoundsStatusServer/logging"
 	"ChromehoundsStatusServer/persistence"
 	"ChromehoundsStatusServer/reset"
+	"ChromehoundsStatusServer/server"
 	"context"
 	"flag"
 	"time"
@@ -24,6 +25,7 @@ func main() {
 	confirm := flag.Bool("confirm", false, "perform the destructive reset (required)")
 	downscale := flag.Int("downscale", 1, "divide starting capture points (battlefield capacity) by this factor to scale the war to the playerbase size (>=1; e.g. 20 -> a 25000-point battlefield starts at 1250)")
 	only := flag.String("only", "", "reset ONLY one subsystem instead of the whole world: battlefields | events | captures (default: all). Lets a feature be re-tested mid-season without wiping unrelated state")
+	season := flag.Int("season", 0, "set the server-wide war season number (>=1); reflected in the squad-stats aggregation buckets and the Status/World Season IDs at the next server start. 0 = leave unchanged. Not destructive, so it works without -confirm.")
 	flag.Parse()
 
 	if *downscale < 1 {
@@ -39,8 +41,8 @@ func main() {
 	if scope == "" {
 		scope = "all"
 	}
-	if !*confirm {
-		logging.Warn.Printf("[RESET] reset (%s) is DESTRUCTIVE for that state on database %q. Re-run with -confirm to proceed.", scope, cfg.Mongo.Database)
+	if !*confirm && *season <= 0 {
+		logging.Warn.Printf("[RESET] nothing to do. The reset (%s) is DESTRUCTIVE on database %q -- re-run with -confirm; or set just the war season with -season N.", scope, cfg.Mongo.Database)
 		return
 	}
 
@@ -56,6 +58,19 @@ func main() {
 		defer cancelClose()
 		_ = store.Close(closeCtx)
 	}()
+
+	// Setting the season is non-destructive, so it runs whether or not the world reset is confirmed. It takes
+	// effect on the NEXT server start (the servers load it at boot), which is when a new season begins.
+	if *season > 0 {
+		if err := server.SaveSeasonNumber(ctx, store, *season); err != nil {
+			logging.Error.Fatalf("[RESET] set season failed: %v", err)
+		}
+		logging.Info.Printf("[RESET] war season set to %d (applies at the next server start)", *season)
+	}
+
+	if !*confirm {
+		return
+	}
 
 	logging.Info.Printf("[RESET] running reset (%s) on database %q (downscale %d)...", scope, cfg.Mongo.Database, *downscale)
 	if err := reset.Reset(ctx, store, int32(*downscale), *only); err != nil {

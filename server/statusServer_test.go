@@ -13,6 +13,11 @@ func TestDateStruct(t *testing.T) {
 }
 
 func TestStatusStruct(t *testing.T) {
+	// The Status "Season ID" now reflects the server-wide season number; set it so this pins the wire
+	// encoding deterministically (114 -> 0x72,0x00 LE) and proves the season flows into the reply.
+	ApplySeasonNumber(114)
+	defer ApplySeasonNumber(defaultSeasonNumber)
+
 	byteTarget := []byte{
 		'C', 'H', 0x00, 0x00, // magic CH\0\0
 		'0', '0', '0', '9', '0', '0', '0', '0', // Xuid

@@ -70,19 +70,20 @@ func envByte(name string, def byte) byte {
 	return byte(v)
 }
 
+// gameSeasonID is the Status reply's "Season ID": the COMBAS_GAME_SEASON env override if set, else the
+// server-wide war season number (season.go / reset -season). Read live so the season loaded at startup (and
+// any future dynamic change) is reflected here.
+func gameSeasonID() uint16 {
+	if raw, ok := os.LookupEnv("COMBAS_GAME_SEASON"); ok {
+		if v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 16); err == nil {
+			return uint16(v)
+		}
+		logging.Warn.Printf("COMBAS_GAME_SEASON=%q is not a number, using season %d", raw, SeasonNumber())
+	}
+	return uint16(SeasonNumber())
+}
+
 var (
-	gameSeasonID = func() uint16 {
-		raw, ok := os.LookupEnv("COMBAS_GAME_SEASON")
-		if !ok {
-			return 0x0072 // 114
-		}
-		v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 16)
-		if err != nil {
-			logging.Warn.Printf("COMBAS_GAME_SEASON=%q is not a number, using 114", raw)
-			return 0x0072
-		}
-		return uint16(v)
-	}()
 	seasonByte2 = envByte("COMBAS_SEASON_BYTE2", 0x00)
 	seasonByte3 = envByte("COMBAS_SEASON_BYTE3", 0x00)
 	flagLocal   = envByte("COMBAS_FLAG_LOCAL", 0x04)
@@ -107,17 +108,18 @@ func zeroServerTime(flag byte) ServerTime {
 	return ServerTime{Flag: flag}
 }
 
-// gameSeasonValue is the "S,C2" field: LE season id then the two tunable bytes.
-var gameSeasonValue = func() [4]byte {
+// gameSeasonValue is the "S,C2" field: LE season id then the two tunable bytes. A function (not a baked
+// var) so the season loaded from the DB at startup is reflected.
+func gameSeasonValue() [4]byte {
 	var b [4]byte
-	binary.LittleEndian.PutUint16(b[0:2], gameSeasonID)
+	binary.LittleEndian.PutUint16(b[0:2], gameSeasonID())
 	b[2], b[3] = seasonByte2, seasonByte3
 	return b
-}()
+}
 
 func init() {
 	logging.Warn.Printf("status body knobs: season=%d byte2=0x%02X byte3=0x%02X flags local=0x%02X "+
-		"start=0x%02X end=0x%02X maintZero=%v%s", gameSeasonID, seasonByte2, seasonByte3, flagLocal,
+		"start=0x%02X end=0x%02X maintZero=%v%s", gameSeasonID(), seasonByte2, seasonByte3, flagLocal,
 		flagStart, flagEnd, maintZero,
 		map[bool]string{true: "  [end flag NON-ZERO => client reports server DOWN]", false: ""}[flagEnd != 0])
 }
@@ -216,7 +218,7 @@ func createServerTime(time time.Time, flag byte) ServerTime {
 func CreateStatus(xuid [16]byte, order [8]byte, serverTime time.Time, maintenanceStart time.Time, maintenanceEnd time.Time, flag byte) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid, order),
-		GameSeason:                 gameSeasonValue,
+		GameSeason:                 gameSeasonValue(),
 		ProgramVersion:             programVersionValue,
 		ServerLocalTime:            createServerTime(serverTime, flagLocal),
 		ServerMaintenanceStartTime: maintTime(maintenanceStart, flagStart),
@@ -228,7 +230,7 @@ func CreateStatus(xuid [16]byte, order [8]byte, serverTime time.Time, maintenanc
 func CreateStatusRaw(xuid [16]byte, order [8]byte, local ServerTime, maintStart ServerTime, maintEnd ServerTime) ServerState {
 	return ServerState{
 		Header:                     CreateHeader(xuid, order),
-		GameSeason:                 gameSeasonValue,
+		GameSeason:                 gameSeasonValue(),
 		ProgramVersion:             programVersionValue,
 		ServerLocalTime:            local,
 		ServerMaintenanceStartTime: maintStart,

@@ -364,3 +364,50 @@ func ownedSet(t *testing.T, ctx context.Context, world *WorldRepository, nation 
 	}
 	return set
 }
+
+// TestBattleReportWinnerUserIDs verifies the winning squad's participating pilots are read from that block's
+// pilot array (block+0x25, 19-byte slots). This is the ledger key for per-member renown contribution, so a
+// wrong offset would credit the wrong players -- or none -- and re-break the withdraw debit.
+func TestBattleReportWinnerUserIDs(t *testing.T) {
+	pkt := make([]byte, constants.MinHelloMessageSize+battleReportBodySize)
+	pkt[0], pkt[1] = 'C', 'H'
+	b := pkt[constants.MinHelloMessageSize:]
+	b[0x23], b[0x24] = 11, 4 // area / map
+	b[0x25] = 'A'            // block-1 nation
+	copy(b[0x26:], "TM0001000000000001")
+	b[0x12C] = 'B' // block-2 nation
+	copy(b[0x12D:], "TM0001000000000002")
+	b[0x233] = 'B' // winner = B -> block 2
+	b[0x234] = 100 // occ delta
+	b[0x223] = 90  // team-1 merit
+	// Three synthetic pilots in the winning block's pilot array (slot 4 left blank to prove only non-empty
+	// slots are returned).
+	pilots := []string{"US0001000000000010", "US0001000000000011", "US0001000000000012"}
+	for i, p := range pilots {
+		copy(b[reportBlock2Users+i*reportUserIDBytes:], p)
+	}
+
+	res, ok := parseBattleReport(pkt)
+	if !ok {
+		t.Fatal("parseBattleReport returned false")
+	}
+	if res.WinnerTeam != "TM0001000000000002" || res.WinnerMerit != 90 {
+		t.Fatalf("winner team/merit = %q/%d, want TM0001000000000002/90", res.WinnerTeam, res.WinnerMerit)
+	}
+	if len(res.WinnerUserIDs) != len(pilots) {
+		t.Fatalf("WinnerUserIDs = %v, want %v", res.WinnerUserIDs, pilots)
+	}
+	for i, p := range pilots {
+		if res.WinnerUserIDs[i] != p {
+			t.Errorf("pilot %d = %q, want %q", i, res.WinnerUserIDs[i], p)
+		}
+	}
+
+	// Winner on the OTHER side reads block-1's array instead.
+	b[0x233] = 'A'
+	copy(b[reportBlock1Users:], "US0001000000000099")
+	res, _ = parseBattleReport(pkt)
+	if len(res.WinnerUserIDs) != 1 || res.WinnerUserIDs[0] != "US0001000000000099" {
+		t.Errorf("block-1 winner user ids = %v, want [US0001000000000099]", res.WinnerUserIDs)
+	}
+}

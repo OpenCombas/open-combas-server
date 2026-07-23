@@ -23,10 +23,13 @@ import (
 // REQUEST body (565 bytes, after the 32-byte header) -- the fields we ingest:
 //   +0x23 area id            +0x24 map id
 //   +0x25 block-1 nation     +0x26 block-1 team id ("TM.." or an AI placeholder like "BBB9999..")
+//   +0x4A block-1 pilot ids  6x "US.." (19 bytes each) -- the pilots who fought for block 1 (assembler
+//                            sub_8217D4D0); +0xBC their gamertags (6x16). Empty slots => fewer than 6 fought.
 //   +0x11C block-1 (team-0) winner-merit slot
-//   +0x12C block-2 nation    +0x12D block-2 team id
+//   +0x12C block-2 nation    +0x12D block-2 team id   +0x151 block-2 pilot ids (6x19)  +0x1C3 gamertags
 //   +0x223 block-2 (team-1) winner-merit slot
 //   +0x233 WINNER nation char   +0x234 occupation delta v92 (0..255, ~100 on a clean win)
+// The winning block's pilot ids are the per-member renown ledger key (WinnerUserIDs -> CreditMemberContributions).
 // The winner nation matches exactly one block; that block's team won and its merit slot holds the earned
 // renown (the loser's slot is 0 even when the loser was active). ACV/hound/COMBAS breakdowns are NOT in
 // the report (they live only in local xstorage), so the squad leaderboard sources entirely from here.
@@ -64,6 +67,34 @@ type BattleResult struct {
 	WinnerTeam, LoserTeam     string
 	OccDelta                  int32 // war-map occupation gained by the winner (== "Capture Points")
 	WinnerMerit               int32 // winner's earned merit (== the squad "Renown" gain)
+	// WinnerUserIDs are the "US.." ids of the winning squad's pilots who actually fought this battle, read
+	// from that block's pilot array. The report assembler (sub_8217D4D0) writes up to reportUsersPerBlock
+	// pilots per block; this drives the per-member renown ledger (CreditMemberContributions).
+	WinnerUserIDs []string
+}
+
+// Per-block pilot array (report assembler sub_8217D4D0): up to 6 user ids, 19 bytes each, at block+0x25 --
+// i.e. body 0x4A for block-1 (base 0x25) and 0x151 for block-2 (base 0x12C). Non-empty slots = who fought.
+const (
+	reportUsersPerBlock = 6
+	reportUserIDBytes   = 19
+	reportBlock1Users   = 0x4A
+	reportBlock2Users   = 0x151
+)
+
+// blockUserIDs reads a block's up-to-6 pilot user ids (19-byte slots) and returns the non-empty ones.
+func blockUserIDs(b []byte, base int) []string {
+	ids := make([]string, 0, reportUsersPerBlock)
+	for i := 0; i < reportUsersPerBlock; i++ {
+		start := base + i*reportUserIDBytes
+		if start+reportUserIDBytes > len(b) {
+			break
+		}
+		if id := trimNullString(b[start : start+reportUserIDBytes]); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // parseBattleReport pulls the outcome fields from a 565-byte report body. Returns false if the packet is
@@ -87,9 +118,11 @@ func parseBattleReport(packet []byte) (BattleResult, bool) {
 	case nationA:
 		r.WinnerTeam, r.LoserTeam, r.LoserNation = teamA, teamB, nationB
 		r.WinnerMerit = int32(b[0x11C]) // team-0 merit slot
+		r.WinnerUserIDs = blockUserIDs(b, reportBlock1Users)
 	case nationB:
 		r.WinnerTeam, r.LoserTeam, r.LoserNation = teamB, teamA, nationA
 		r.WinnerMerit = int32(b[0x223]) // team-1 merit slot
+		r.WinnerUserIDs = blockUserIDs(b, reportBlock2Users)
 	default:
 		return r, false
 	}

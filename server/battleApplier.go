@@ -63,6 +63,11 @@ func (s *BattleApplier) Apply(ctx context.Context, res BattleResult) {
 		}
 	}
 	if s.squadRepo != nil {
+		// Ledger this battle's renown to the pilots who actually fought (report's winner user ids), so a
+		// member's withdraw debits exactly what they earned. Independent of the squad-total credit below.
+		if err := s.squadRepo.CreditMemberContributions(ctx, res.WinnerTeam, res.WinnerUserIDs, res.WinnerMerit); err != nil {
+			logging.Warn.Printf("[%s] member-contribution credit failed: %v", s.label, err)
+		}
 		if err := s.squadRepo.CreditBattle(ctx, res.WinnerTeam, res.LoserTeam, res.OccDelta, res.WinnerMerit, currentSeason); err != nil {
 			logging.Warn.Printf("[%s] squad-stat credit failed: %v", s.label, err)
 		} else {

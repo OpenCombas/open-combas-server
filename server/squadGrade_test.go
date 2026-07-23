@@ -85,46 +85,10 @@ func TestEveryGradeReachable(t *testing.T) {
 	}
 }
 
-func TestDepartingMemberShare(t *testing.T) {
-	cases := []struct {
-		name   string
-		bucket int32
-		before int
-		want   int32
-	}{
-		{"half of a two-man squad", 1000, 2, 500},
-		{"quarter of a four-man squad", 1000, 4, 250},
-		{"rounds down in the squad's favour", 1000, 3, 333},
-		{"sole member disbands, no debit", 1000, 1, 0},
-		{"empty roster", 1000, 0, 0},
-		{"never earned anything", 0, 4, 0},
-		{"negative bucket is not amplified", -500, 4, 0},
-		{"full roster", 100000, 20, 5000},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := departingMemberShare(tc.bucket, tc.before); got != tc.want {
-				t.Errorf("departingMemberShare(%d, %d) = %d, want %d", tc.bucket, tc.before, got, tc.want)
-			}
-		})
-	}
-}
-
-// Renown-Per-Member (the 1262 KBN-3 ranking) must survive a departure unchanged -- that invariant is the
-// reason the debit is an equal share rather than any other fraction. Integer rounding makes it approximate,
-// so assert it does not drift by more than the rounding error.
-func TestDepartingMemberKeepsRenownPerMemberStable(t *testing.T) {
-	for _, n := range []int{2, 3, 4, 7, 12, 20} {
-		for _, total := range []int32{300, 5000, 100000} {
-			before := float64(total) / float64(n)
-			after := float64(total-departingMemberShare(total, n)) / float64(n-1)
-			if diff := after - before; diff < -1 || diff > 1 {
-				t.Errorf("n=%d total=%d: renown-per-member moved %.3f -> %.3f (drift %.3f)",
-					n, total, before, after, diff)
-			}
-		}
-	}
-}
+// (The old flat Renown/N departing-member share -- and the "renown-per-member stays stable on departure"
+// invariant it existed to preserve -- were removed: a withdraw now debits the member's OWN tracked
+// contribution instead, so a non-participant costs the squad nothing. See DebitMemberContribution and
+// TestBattleReportWinnerUserIDs for the participant ledger.)
 
 func TestDebitBucket(t *testing.T) {
 	const season = "0014"
