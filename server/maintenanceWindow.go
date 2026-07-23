@@ -119,3 +119,68 @@ func (r *WorldRepository) ClearMaintenanceWindow(ctx context.Context) error {
 	_, err := r.maintenance.DeleteOne(ctx, bson.M{"_id": maintenanceDocID})
 	return err
 }
+
+// GetMaintenanceWindow returns the STORED window verbatim (nil if none is scheduled), for admin tooling
+// that needs to show what is set -- distinct from MaintenanceWindowFor, which resolves the value actually
+// served (falling back to a default future window when nothing is stored or the stored one has elapsed).
+func (r *WorldRepository) GetMaintenanceWindow(ctx context.Context) (*MaintenanceWindow, error) {
+	if r == nil || r.maintenance == nil {
+		return nil, nil
+	}
+	var w MaintenanceWindow
+	err := r.maintenance.FindOne(ctx, bson.M{"_id": maintenanceDocID}).Decode(&w)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &w, nil
+}
+
+// MaintenanceState classifies a (now, start, end) window into the client-visible state it drives, so admin
+// tooling can report what the title will actually do. Mirrors the flag table in this file's doc comment.
+type MaintenanceState int
+
+const (
+	MaintNone       MaintenanceState = iota // no coherent window (start>=end): treated as nothing
+	MaintFuture                             // dated announce once per session; server AVAILABLE
+	MaintCountdown                          // within the ~15 min pre-window: countdown popup
+	MaintInProgress                         // now inside the window: server shows in-maintenance, OFFLINE
+	MaintEnded                              // window elapsed: client treats server as OFFLINE
+)
+
+// maintenanceAnnounceLeadSeconds is the client's earliest countdown threshold (dword_82059EEC = 900s); a
+// window starting within it triggers the countdown popup instead of the dated announce.
+const maintenanceAnnounceLeadSeconds = 900
+
+func (s MaintenanceState) String() string {
+	switch s {
+	case MaintFuture:
+		return "future (dated announce once/session; server AVAILABLE)"
+	case MaintCountdown:
+		return "countdown (<15min; countdown popup; AVAILABLE)"
+	case MaintInProgress:
+		return "in-progress (server shows in-maintenance; OFFLINE)"
+	case MaintEnded:
+		return "ended (client treats server as OFFLINE)"
+	}
+	return "none"
+}
+
+// ClassifyMaintenanceWindow returns the client state a window produces at time now.
+func ClassifyMaintenanceWindow(now, start, end time.Time) MaintenanceState {
+	if start.IsZero() || end.IsZero() || !end.After(start) {
+		return MaintNone
+	}
+	switch {
+	case !end.After(now):
+		return MaintEnded
+	case !start.After(now):
+		return MaintInProgress
+	case start.Sub(now) <= maintenanceAnnounceLeadSeconds*time.Second:
+		return MaintCountdown
+	default:
+		return MaintFuture
+	}
+}

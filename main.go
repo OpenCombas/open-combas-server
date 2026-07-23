@@ -151,6 +151,9 @@ func main() {
 			case config.Echoing:
 				srv := server.NewEchoServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
 				go srv.Run()
+			case config.Shop:
+				srv := server.NewShopServer(address, serverConfig, cfg.DefaultBufferSize, &cfg.Logging, ctx, &wg, cfg.Prometheus, prometheus.WrapRegistererWith(prometheus.Labels{"server_type": string(serverConfig.Type), "server_name": string(serverConfig.Label)}, reg))
+				go srv.Run()
 			default:
 				logging.Error.Printf("Unsupported server type: %s\n", serverConfig.Type)
 			}

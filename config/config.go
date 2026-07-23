@@ -97,6 +97,7 @@ const (
 	SquadRanking   ServerType = "SquadRanking"
 	SquadHistory   ServerType = "SquadHistory"
 	BattleReport   ServerType = "BattleReport"
+	Shop           ServerType = "Shop"
 	Buffer         ServerType = "Buffer"
 	OrderedMessage ServerType = "OrderedMessage"
 )
