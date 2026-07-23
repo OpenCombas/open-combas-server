@@ -39,12 +39,15 @@ const (
 	shopResponseSize = constants.MinHelloMessageSize + shopBodySize  // 2056
 )
 
-// ShopItem is one catalogue entry (12 bytes, schema "I1, S2, C4"). Field meanings are provisional -- see the
-// marker builder; the in-game capture confirms which is price / id / stock / part-code.
+// ShopItem is one catalogue entry (12 bytes, schema "I1, S2, C4"). The "C4" field is NOT a 4-char string --
+// it is the 4-byte PACKED PART DESCRIPTOR the client resolves against its runtime part DB (unk_829EB580):
+// byte0 = major category (1-6), byte1 = subcategory, bytes2-3 = index-within-subcategory (little-endian on
+// the wire, so as a uint32 value it reads back as 0xMMSSIIII, e.g. 0x01010001). sub_82294F28 derives the
+// display category from byte0/byte1; the lineup check matches the whole descriptor against a real part.
 type ShopItem struct {
-	Price int32    // "I1" -- provisional: item cost
-	IDs   [2]int16 // "S2" -- provisional: item id + a second attribute (stock / level / category)
-	Code  [4]byte  // "C4" -- provisional: 4-char part/item code
+	Price int32    // "I1" -- item cost (buy scene compares against funds)
+	IDs   [2]int16 // "S2" -- two shorts (id / attribute); not read by the featured-part path
+	Desc  uint32   // "C4" -- packed part descriptor 0xMMSSIIII (major<<24 | sub<<16 | index)
 }
 
 // ShopBlock is one of the two 1012-byte sections. On the wire it deserializes as "C20, I7, S1, C2" + 80x
@@ -70,48 +73,55 @@ type ShopResponse struct {
 	Blocks [shopBlockCount]ShopBlock
 }
 
-// validPartCodes are 4-char part codes CONFIRMED to exist in the client's part database (reverse-engineered
-// from the "Hound Buy Check" sub_822AA968 / CH_ShopLimitedListScene; the client loads
-// auto:\game\hound\shop\<code>.mcd). The Code field is validated against the part DB -- an unknown code makes
-// the client DROP the whole entry ("no shop lineup"), which is why the all-marker first attempt rendered
-// empty. Entries using these codes render; the OTHER fields still carry markers so the capture labels them.
-// TODO: expand to the full catalogue from the .mcd files the game loads (see chromehounds_shop_re.md).
-var validPartCodes = []string{"H600", "H601", "H602"}
+// shopCatalogue is a curated spread of REAL packed part descriptors, dumped live from the client's runtime
+// part DB (unk_829EB580, 603 parts) via its own index accessor sub_82284200. It takes the first descriptors
+// of every non-empty (major.sub) group, so the set spans all 6 major categories and all 41 subcategories --
+// every hound part slot type is represented. Each value is 0xMMSSIIII (major, sub, index). Expand toward the
+// full 603 as needed; see project_shop_subsystem memory + scratchpad/mcd_parts.json for the complete dump.
+var shopCatalogue = []uint32{
+	0x01010001, 0x01010002, 0x01020001, 0x01020002, 0x0103001F, 0x01030020, 0x02010001, 0x02010002,
+	0x02020001, 0x02020002, 0x02030001, 0x02030002, 0x02040001, 0x02040002, 0x02050001, 0x02050002,
+	0x02060001, 0x02060002, 0x03010001, 0x03010002, 0x03020001, 0x03020002, 0x03030001, 0x03030002,
+	0x04010001, 0x04010002, 0x04020001, 0x04020002, 0x04030001, 0x04030002, 0x05010001, 0x05010002,
+	0x05020001, 0x05020002, 0x05030001, 0x05030002, 0x05040001, 0x05040002, 0x05050001, 0x05050002,
+	0x05060001, 0x05060002, 0x05070001, 0x05070002, 0x05080001, 0x05080002, 0x05090001, 0x05090002,
+	0x050A0001, 0x050A0002, 0x050B0001, 0x050B0002, 0x050C0001, 0x050C0002, 0x050D0001, 0x050D001F,
+	0x050E0001, 0x050E0002, 0x050F0002, 0x050F0021, 0x05100001, 0x05100002, 0x05110001, 0x05110002,
+	0x06010001, 0x06010002, 0x06020001, 0x06020002, 0x06030001, 0x06030002, 0x06040001, 0x06040002,
+	0x06050001, 0x06050002, 0x06060001, 0x06060002, 0x06080001, 0x06080002, 0x06090001, 0x06090002,
+	0x060A0001, 0x060A0002,
+}
 
-// buildMarkerShop serves a mostly-marker catalogue whose FIRST entries use real part codes so they actually
-// render, while their other fields stay distinct markers to label the structure from one capture:
-//   - block Name -> "BLOCK0 ..."/"BLOCK1 ..." (which section is which, and whether both render);
-//   - block Vals[i] -> 1_000_000*(block+1)+i (find funds/count among the 7);
-//   - item Price -> 100_000*(block+1)+i (find the price cell and item order);
-//   - item Code -> a real part code for the first len(validPartCodes) entries, else "A000".. (which the
-//     client drops) -- so the rendered rows prove the Code field IS the part-lookup key;
-//   - item IDs -> {i, 1000+i} (tell the two shorts apart).
-//
-// Count is set to the full item count; if the UI shows only the valid-coded rows, Count does not gate.
-func buildMarkerShop(xuid [16]byte, order [8]byte) ShopResponse {
+// buildShop serves a real catalogue built from shopCatalogue. The client consumes the reply two ways
+// (sub_82162118 / sub_82163180): the 5 "New Parts" dwords at block+24 (Vals[1..5]) are the FEATURED pool --
+// the shop RNG-picks one to show as the visit's new part -- and the Items list (Count entries) is the
+// browsable lineup, each keyed by its packed Desc. The 82-descriptor spread is split across the two blocks;
+// each block's featured pool is drawn from its own slice so the featured part is always a real, loadable part.
+func buildShop(xuid [16]byte, order [8]byte) ShopResponse {
 	resp := ShopResponse{Header: CreateHeader(xuid, order)}
-	// Read exactly the valid-coded entries so every row that reaches the client is a real part.
-	count := byte(len(validPartCodes))
+	half := (len(shopCatalogue) + 1) / 2
 	for b := 0; b < shopBlockCount; b++ {
 		blk := &resp.Blocks[b]
 		blk.Status = 0 // REQUIRED: non-zero here makes the client reject the whole reply
-		copy(blk.Name[:], fmt.Sprintf("BLK%d-NAME-19bytes", b))
-		for i := 0; i < len(blk.Vals); i++ {
-			blk.Vals[i] = int32(1_000_000*(b+1) + i)
+
+		lo := b * half
+		hi := lo + half
+		if hi > len(shopCatalogue) {
+			hi = len(shopCatalogue)
 		}
-		blk.S1 = int16(500 + b)
-		blk.Count = count // BYTE at +50 -- the client reads this many Items
-		blk.Flag = byte('0' + b)
-		for i := 0; i < shopBlockItems; i++ {
+		slice := shopCatalogue[lo:hi]
+
+		copy(blk.Name[:], fmt.Sprintf("COMBAS SHOP %d", b))
+		// Vals[0] (+20) and Vals[6] (+44) are shop params of unconfirmed meaning; leave 0. Vals[1..5] (+24)
+		// are the 5 featured "New Parts" -- fill from this block's slice so each is a real descriptor.
+		for i := 0; i < 5 && i < len(slice); i++ {
+			blk.Vals[1+i] = int32(slice[i])
+		}
+		blk.Count = byte(len(slice)) // BYTE at +50 -- the client reads this many Items
+		for i, desc := range slice {
 			it := &blk.Items[i]
-			it.Price = int32(100_000*(b+1) + i)
-			it.IDs[0] = int16(i)
-			it.IDs[1] = int16(1000 + i)
-			if i < len(validPartCodes) {
-				copy(it.Code[:], validPartCodes[i]) // real part -> this row renders
-			} else {
-				copy(it.Code[:], fmt.Sprintf("%c%03d", byte('A'+b), i)) // marker (beyond Count; not read)
-			}
+			it.Price = 1000 // nominal cost; featured-part path ignores it
+			it.Desc = desc
 		}
 	}
 	return resp
@@ -124,9 +134,9 @@ type shopServer struct {
 func NewShopServer(listenAddress net.IP, serverConfig config.ServerConfig, bufferSize int, loggingConfig *config.LoggingConfig, ctx context.Context, wg *sync.WaitGroup, promConfig config.PrometheusConfig, reg prometheus.Registerer) *shopServer {
 	s := &shopServer{}
 
-	// Announce the scaffold state unconditionally -- a capture must never be ambiguous about what it saw.
-	logging.Info.Printf("[%s] SHOP scaffold: serving PROVENANCE-MARKER catalogue (no real model yet) -- %d blocks x %d B, reply %d B; request body \"<account>,<nation>\" not yet parsed",
-		serverConfig.Label, shopBlockCount, shopBlockSize, shopResponseSize)
+	// Announce state unconditionally -- a capture must never be ambiguous about what it saw.
+	logging.Info.Printf("[%s] SHOP: serving %d real part descriptors across %d blocks x %d B (reply %d B); featured pool = Vals[1..5], lineup = Items",
+		serverConfig.Label, len(shopCatalogue), shopBlockCount, shopBlockSize, shopResponseSize)
 
 	s.messageServer = &messageServer{
 		listenAddress: listenAddress,
@@ -142,7 +152,7 @@ func NewShopServer(listenAddress net.IP, serverConfig config.ServerConfig, buffe
 			return validateShopPacket(packet, clientAddr, serverConfig.Label)
 		},
 		buildPayload: func(hi UserHelloMessage) interface{} {
-			return buildMarkerShop(hi.Xuid, hi.Order)
+			return buildShop(hi.Xuid, hi.Order)
 		},
 		responseSize: shopResponseSize,
 	}
