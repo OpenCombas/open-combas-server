@@ -83,80 +83,118 @@ var areaDefaultNation = [23]byte{
 	2, // 22 Tamala       -> C
 }
 
-// capturePoints overrides the default capacity for battlefields whose capture points are known. Keyed by
-// [areaID, mapID]; every battlefield not listed here uses defaultCapturePoints (25000). Only the non-zero
-// entries from known_occ_points.png are recorded (a 0 there means "unknown" -> default).
-//
-// Transcribed from known_occ_points.png; every entry's (areaID, mapID) was verified against the
-// battlefield names/order in chromehounds_battlefields_areas.csv.
-var capturePoints = map[[2]int32]int32{
-	{5, 1}:  30000, // Zavoywko Dam 1
-	{5, 3}:  30000, // Zavoywko Dam 2
-	{6, 2}:  25000, // Base Ruins Perimeter
-	{7, 2}:  10000, // Northern Walls
-	{9, 2}:  10000, // Loxton Gorge
-	{9, 4}:  10000, // Edina Mine Ruins
-	{10, 3}: 30000, // Southworth Highway
-	{10, 4}: 30000, // Village Ruin
-	{13, 3}: 30000, // West Industrial Zone
-	{14, 1}: 40000, // North Stanthorpe Bay
-	{15, 2}: 25000, // East Cecil Plains
-	{16, 2}: 30000, // East Lake Orlovka
-	{17, 1}: 20000, // Savonovo
-	{17, 4}: 10000, // East Salma Woods
-	{18, 1}: 38000, // North Cemo Oil Field
-	{18, 3}: 32000, // North Dinar Plains
-	{18, 4}: 32000, // South Cemo Oil Field
-	{19, 1}: 30000, // West Bayazit River
-	{19, 2}: 20000, // East Bayazit River
-	{19, 3}: 30000, // Biraal Water Plant
-	{20, 1}: 10000, // Ruins
-	{20, 2}: 20000, // Old Berri Coal Mine
-	{20, 3}: 10000, // North Cressy Desert
-	{21, 2}: 28000, // Bas Bar
-	{21, 3}: 28000, // North Durama Desert
-	{21, 4}: 28000, // South Durama Desert
-	{22, 4}: 28000, // South Mine
+// canonicalBattlefields is the authoritative launch-time ("OLD") data for every one of the 80 battlefields,
+// transcribed from the Chromehounds map list keyed by Map File Number (AA_BBB = area AA, battlefield BBB):
+//   - Capacity == "War Point Value (OLD)" -- the occupation-pool capacity == a battlefield's capture level.
+//   - Dots     == "# Of Points (OLD)"     -- the strategic-value ("orange dots"); every area's dots sum to 5.
+// The battlefield id ordering is authoritative from chromehounds_battlefields_areas.csv (name<->id); the map
+// list was keyed by name and its Map File Numbers were corrected to match, so (area,map) here lines up with
+// the ids the rest of the server uses. This supersedes the earlier partial known_occ_points.png transcription
+// (which had ~12 wrong capacities). Every battlefield is present, so the capacityFor/dotsFor fallbacks below
+// are belt-and-suspenders only.
+var canonicalBattlefields = map[[2]int32]struct{ Capacity, Dots int32 }{
+	{1, 1}:  {50000, 2}, // Central Xeres
+	{1, 2}:  {40000, 1}, // West Xeres
+	{1, 3}:  {40000, 1}, // East Xeres
+	{1, 4}:  {40000, 1}, // South Xeres
+	{2, 1}:  {40000, 1}, // North Ostrov
+	{2, 2}:  {50000, 2}, // Central Ostrov
+	{2, 3}:  {40000, 1}, // East Ostrov
+	{2, 4}:  {40000, 1}, // West Ostrov
+	{3, 1}:  {50000, 2}, // Central Qara
+	{3, 2}:  {50000, 2}, // North Qara
+	{3, 3}:  {40000, 1}, // South Qara
+	{4, 1}:  {38000, 2}, // Fort Ozero
+	{4, 2}:  {38000, 2}, // Fort Perimeter
+	{4, 3}:  {30000, 1}, // Fort Snowfield
+	{5, 1}:  {30000, 1}, // Zavoywko Dam 1
+	{5, 2}:  {38000, 2}, // Olensk Highlands
+	{5, 3}:  {38000, 2}, // Zavoywko Dam 2
+	{6, 1}:  {35000, 2}, // Ileckaya Base Ruins
+	{6, 2}:  {25000, 1}, // Base Ruins Perimeter
+	{6, 3}:  {25000, 1}, // Kudelyyka Valley
+	{6, 4}:  {25000, 1}, // Xikhranwi Highlands
+	{7, 1}:  {10000, 1}, // Sulimov Castle Wall
+	{7, 2}:  {20000, 2}, // Northern Walls
+	{7, 3}:  {20000, 2}, // Southern Walls
+	{8, 1}:  {33000, 2}, // East Mount Catana
+	{8, 2}:  {25000, 1}, // West Mount Catana
+	{8, 3}:  {25000, 1}, // North Mount Catana
+	{8, 4}:  {25000, 1}, // South Mount Catana
+	{9, 1}:  {33000, 2}, // Stanly Mountains
+	{9, 2}:  {25000, 1}, // Loxton Gorge
+	{9, 3}:  {25000, 1}, // Upstream Of Gorge
+	{9, 4}:  {25000, 1}, // Edina Mine Ruins
+	{10, 1}: {10000, 1}, // North Village Ruin
+	{10, 2}: {10000, 1}, // South Village Ruin
+	{10, 3}: {10000, 1}, // Southworth Highway
+	{10, 4}: {20000, 2}, // Village Ruin
+	{11, 1}: {38000, 2}, // East Cale Plains
+	{11, 2}: {32000, 1}, // West Cale Plains
+	{11, 3}: {32000, 1}, // Maldon
+	{11, 4}: {32000, 1}, // Wakool
+	{12, 1}: {35000, 2}, // Cobar
+	{12, 2}: {25000, 1}, // North Bath Plains
+	{12, 3}: {25000, 1}, // South Bath Plains
+	{12, 4}: {25000, 1}, // Ebus Lake
+	{13, 1}: {38000, 2}, // Osca Industrial Zone
+	{13, 2}: {38000, 2}, // East Industrial Zone
+	{13, 3}: {30000, 1}, // West Industrial Zone
+	{14, 1}: {38000, 2}, // North Stanthorpe Bay
+	{14, 2}: {30000, 1}, // South Stanthorpe Bay
+	{14, 3}: {38000, 2}, // Bay Warehouse District
+	{15, 1}: {33000, 2}, // Cecil Plains
+	{15, 2}: {25000, 1}, // East Cecil Plains
+	{15, 3}: {25000, 1}, // Kilmore Highlands
+	{15, 4}: {25000, 1}, // North Cecil Plains
+	{16, 1}: {38000, 2}, // Lake Orlovka
+	{16, 2}: {38000, 2}, // East Lake Orlovka
+	{16, 3}: {30000, 1}, // Lake Suhodol
+	{17, 1}: {38000, 2}, // Savonovo
+	{17, 2}: {32000, 1}, // Eger
+	{17, 3}: {32000, 1}, // West Salma Woods
+	{17, 4}: {32000, 1}, // East Salma Woods
+	{18, 1}: {38000, 2}, // North Cemo Oil Fields
+	{18, 2}: {32000, 1}, // Dinar Plains
+	{18, 3}: {32000, 1}, // North Dinar Plains
+	{18, 4}: {32000, 1}, // South Cemo Oil Field
+	{19, 1}: {30000, 2}, // West Bayazit River
+	{19, 2}: {20000, 1}, // East Bayazit River
+	{19, 3}: {30000, 2}, // Biraal Water Plant
+	{20, 1}: {10000, 1}, // Ruins
+	{20, 2}: {20000, 2}, // Old Berri Coal Mine
+	{20, 3}: {10000, 1}, // North Cressy Desert
+	{20, 4}: {10000, 1}, // South Cressy Desert
+	{21, 1}: {38000, 2}, // Kara Bakir
+	{21, 2}: {28000, 1}, // Bas Bar
+	{21, 3}: {28000, 1}, // North Durama Desert
+	{21, 4}: {28000, 1}, // South Durama Desert
+	{22, 1}: {38000, 2}, // Pamak Mine
+	{22, 2}: {28000, 1}, // Aydin Desert
+	{22, 3}: {28000, 1}, // Bais Halayi Field
+	{22, 4}: {28000, 1}, // South Mine
 }
 
-// capacityFor returns a battlefield's occupation-pool capacity: its known capture points, else the default.
+// areaDotTotal documents the invariant that every area's strategic-value dots sum to 5 (the canonical data
+// above satisfies it; the tests assert it).
+const areaDotTotal = 5
+
+// capacityFor returns a battlefield's occupation-pool capacity (its launch-time War Point Value); missing
+// battlefields fall back to the default (never expected -- the canonical table is complete).
 func capacityFor(area, mapID int32) int32 {
-	if p, ok := capturePoints[[2]int32{area, mapID}]; ok {
-		return p
+	if c, ok := canonicalBattlefields[[2]int32{area, mapID}]; ok {
+		return c.Capacity
 	}
 	return defaultCapturePoints
 }
 
-// areaDotTotal is the strategic-value ("orange dots") an area distributes across its battlefields: every
-// area's dots sum to 5.
-const areaDotTotal = 5
-
-// dotOverride gives an explicit per-battlefield dot count (indexed by mapID-1) for areas whose real
-// distribution we know. Areas not listed use the default: 1 dot each, with the remaining (5-count) dots
-// added from map 1 upward.
-//
-// TODO(reset): the totals are correct -- every area sums to 5, and the 3-battlefield split is a confirmed
-// 2+2+1 (operator). What's still provisional is WHICH battlefield carries the extra dot(s): only Tajin
-// (battlefield_info screenshot) and Braidwood (operator) are known; the rest default to filling from map 1
-// upward. Replace entries here once the per-area distribution is recovered from the archive.
-var dotOverride = map[int32][]int32{
-	10: {1, 1, 1, 2}, // Tajin: N/S Village Ruin + Southworth = 1, Village Ruin (map 4) = 2
-	12: {2, 1, 1, 1}, // Braidwood: Cobar (map 1) = 2, N/S Bath Plains + Ebus Lake = 1
-}
-
-// areaDots returns the strategic-value (dots) for each battlefield in an area, summing to areaDotTotal.
-func areaDots(area, count int32) []int32 {
-	if ov, ok := dotOverride[area]; ok && int32(len(ov)) == count {
-		return ov
+// dotsFor returns a battlefield's strategic value ("orange dots" == its launch-time "# Of Points"); missing
+// battlefields fall back to 1 (never expected -- the canonical table is complete).
+func dotsFor(area, mapID int32) int32 {
+	if c, ok := canonicalBattlefields[[2]int32{area, mapID}]; ok {
+		return c.Dots
 	}
-	dots := make([]int32, count)
-	for i := range dots {
-		dots[i] = 1
-	}
-	for i, extra := int32(0), areaDotTotal-count; extra > 0 && i < count; i, extra = i+1, extra-1 {
-		dots[i]++
-	}
-	return dots
+	return 1
 }
 
 // seedBattlefields builds the full reset layout: every battlefield in every area, 100% occupied by the
@@ -175,13 +213,12 @@ func seedBattlefields(downscale int32) []battlefield {
 	for area := int32(1); int(area) < len(areaBattlefieldCount); area++ {
 		count := int32(areaBattlefieldCount[area])
 		nation := areaDefaultNation[area]
-		dots := areaDots(area, count)
 		for mapID := int32(1); mapID <= count; mapID++ {
 			cap := capacityFor(area, mapID) / downscale
 			if cap < 1 {
 				cap = 1
 			}
-			bf := battlefield{AreaID: area, MapID: mapID, Capacity: cap, StrategicValue: dots[mapID-1]}
+			bf := battlefield{AreaID: area, MapID: mapID, Capacity: cap, StrategicValue: dotsFor(area, mapID)}
 			switch nation {
 			case 0:
 				bf.OccA = cap // 100% nation A

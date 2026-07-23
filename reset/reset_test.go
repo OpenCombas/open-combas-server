@@ -115,12 +115,12 @@ func TestKnownAssignments(t *testing.T) {
 		return nil
 	}
 
-	// Xeres (1) = A at default 25000.
-	if b := get(1, 1); b == nil || b.OccA != 25000 || b.OccB != 0 || b.OccC != 0 || b.Capacity != 25000 {
+	// Central Xeres (1,1) = A, canonical 50000 War Point Value (was the old 25000 default).
+	if b := get(1, 1); b == nil || b.OccA != 50000 || b.OccB != 0 || b.OccC != 0 || b.Capacity != 50000 {
 		t.Errorf("Xeres m1 = %+v", b)
 	}
-	// North Stanthorpe Bay (14,1) = A, 40000 capture points.
-	if b := get(14, 1); b == nil || b.Capacity != 40000 || b.OccA != 40000 {
+	// North Stanthorpe Bay (14,1) = A, canonical 38000 War Point Value (was mistranscribed 40000).
+	if b := get(14, 1); b == nil || b.Capacity != 38000 || b.OccA != 38000 {
 		t.Errorf("Stanthorpe m1 = %+v", b)
 	}
 	// Ostrov (2) = B.
