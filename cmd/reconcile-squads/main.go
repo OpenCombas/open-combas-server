@@ -28,6 +28,13 @@
 //
 //	go run ./cmd/reconcile-squads -contributions          # DRY RUN — show the per-squad distribution
 //	go run ./cmd/reconcile-squads -contributions -apply   # seed the ledger
+//
+// Finally, -grant is a targeted compensation lever for a squad unfairly drained by the old model: it adds a
+// renown amount to one team id and splits it evenly across the current roster (raising both the squad's
+// ranking renown and each member's ledger, so it round-trips through a future withdraw). Requires -renown.
+//
+//	go run ./cmd/reconcile-squads -grant TM0001000000000042 -renown 500          # DRY RUN — show the split
+//	go run ./cmd/reconcile-squads -grant TM0001000000000042 -renown 500 -apply   # execute
 package main
 
 import (
@@ -44,6 +51,8 @@ func main() {
 	apply := flag.Bool("apply", false, "execute the plan (default is a dry run that writes nothing)")
 	grades := flag.Bool("grades", false, "backfill stored squad grades from lifetime renown instead of reconciling membership")
 	contributions := flag.Bool("contributions", false, "backfill the per-member renown ledger from each squad's accrued renown (one-time migration from the old flat-share withdraw model)")
+	grantTeam := flag.String("grant", "", "compensate ONE squad: add renown to this teamId and split it evenly among current members (for squads over-drained by the old model). Requires -renown.")
+	grantRenown := flag.Int("renown", 0, "amount of renown to grant with -grant")
 	flag.Parse()
 
 	cfg := config.LoadConfig()
@@ -63,6 +72,12 @@ func main() {
 		defer cancelClose()
 		_ = store.Close(closeCtx)
 	}()
+
+	// Load the DB war season so a -grant buckets renown under the current season (season.go). Best-effort:
+	// keeps the default on a read error. The other modes only touch Renown.Total, so this doesn't affect them.
+	if n, err := server.LoadSeasonNumber(ctx, store); err == nil {
+		server.ApplySeasonNumber(n)
+	}
 
 	squad := server.NewSquadRepository(store)
 
@@ -102,6 +117,30 @@ func main() {
 		printSection("CONTRIBUTION BACKFILL (distribute unattributed renown equally across the roster)", cr.Changes)
 		if !cr.Applied && len(cr.Changes) > 0 {
 			logging.Info.Printf("[RECONCILE] dry run only — re-run with -contributions -apply to execute")
+		}
+		return
+	}
+
+	// Targeted compensation grant: add renown to one squad, split evenly across its current members.
+	if *grantTeam != "" {
+		if *grantRenown <= 0 {
+			logging.Error.Fatalf("[RECONCILE] -grant requires -renown > 0 (got %d)", *grantRenown)
+		}
+		gr, err := squad.GrantSquadRenown(ctx, *grantTeam, int32(*grantRenown), *apply)
+		if err != nil {
+			logging.Error.Fatalf("[RECONCILE] grant failed: %v", err)
+		}
+		if !gr.Found {
+			logging.Error.Fatalf("[RECONCILE] squad %q not found — nothing granted", *grantTeam)
+		}
+		mode := "DRY RUN (no writes)"
+		if gr.Applied {
+			mode = "APPLIED"
+		}
+		logging.Info.Printf("[RECONCILE] grant %s — %s: +%d renown across %d members (+%d each, remainder %d unattributed), season %s",
+			mode, gr.TeamID, gr.Renown, gr.Members, gr.PerMember, gr.Remainder, server.SeasonKey(server.SeasonNumber()))
+		if !gr.Applied {
+			logging.Info.Printf("[RECONCILE] dry run only — re-run with -grant %s -renown %d -apply to execute", *grantTeam, *grantRenown)
 		}
 		return
 	}

@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // Squad-consistency reconciliation. The registration (181) and join (182) paths link a player's profile to
@@ -367,4 +368,70 @@ func (r *SquadRepository) BackfillMemberContributions(ctx context.Context, apply
 		}
 	}
 	return report, nil
+}
+
+// GrantReport summarises a GrantSquadRenown run (or its dry-run plan).
+type GrantReport struct {
+	Applied   bool
+	TeamID    string
+	Found     bool
+	Members   int
+	Renown    int32 // total granted
+	PerMember int32 // renown / members (floored)
+	Remainder int32 // renown % members (left unattributed, like the credit/debit flooring)
+}
+
+// GrantSquadRenown adds renown to ONE squad and distributes it evenly across its current members' ledgers --
+// an admin compensation lever for squads unfairly drained by the old flat-share withdraw model. It raises the
+// squad's Renown (running total + current-season bucket, so its ranking recovers) AND each member's
+// RenownContribution (renown/N, floored; the remainder stays unattributed), keeping the ledger consistent so
+// future withdraws debit correctly. The stored grade is refreshed to match, same as the battle path.
+//
+// Found=false (no error) for an unknown team id; errors on a non-positive amount or an empty roster. Uses the
+// process's currentSeason, so the reconcile tool loads the DB season first (ApplySeasonNumber) to bucket it
+// correctly.
+func (r *SquadRepository) GrantSquadRenown(ctx context.Context, teamID string, renown int32, apply bool) (GrantReport, error) {
+	rep := GrantReport{Applied: apply, TeamID: teamID, Renown: renown}
+	if renown <= 0 {
+		return rep, fmt.Errorf("renown to grant must be positive, got %d", renown)
+	}
+	sq, err := r.SquadByTeamID(ctx, teamID)
+	if err != nil {
+		return rep, err
+	}
+	if sq == nil {
+		return rep, nil // Found=false
+	}
+	rep.Found = true
+	rep.Members = len(sq.Members)
+	if rep.Members == 0 {
+		return rep, fmt.Errorf("squad %s has no members to distribute renown to", teamID)
+	}
+	n := int32(rep.Members)
+	rep.PerMember = renown / n
+	rep.Remainder = renown % n
+
+	if !apply {
+		return rep, nil
+	}
+
+	// Raise the squad's renown standing (running total + current-season bucket).
+	if _, err := r.stats.UpdateOne(ctx, bson.M{"teamId": teamID},
+		bson.M{"$inc": bson.M{"renown.total": renown, "renown.bySeason." + currentSeason: renown}},
+		options.UpdateOne().SetUpsert(true)); err != nil {
+		return rep, err
+	}
+	// Distribute to the per-member ledger (renown/N each) via the same equal-split credit a battle uses.
+	userIDs := make([]string, 0, rep.Members)
+	for _, m := range sq.Members {
+		userIDs = append(userIDs, m.UserID)
+	}
+	if err := r.CreditMemberContributions(ctx, teamID, userIDs, renown); err != nil {
+		return rep, err
+	}
+	// Keep the stored grade in step with the new renown, exactly as the battle path does after a credit.
+	if _, err := r.RefreshSquadGrade(ctx, teamID); err != nil {
+		logging.Warn.Printf("grant: grade refresh for %s failed: %v", teamID, err)
+	}
+	return rep, nil
 }
