@@ -18,6 +18,16 @@
 //
 //	go run ./cmd/reconcile-squads -grades           # DRY RUN — show which squads are out of sync
 //	go run ./cmd/reconcile-squads -grades -apply    # write the corrected grades
+//
+// A second PRE-DEPLOY step behind -contributions migrates environments off the OLD flat-share withdraw model:
+// the per-member renown ledger (RenownContribution) did not exist before, so on existing data every member
+// reads 0 and a withdraw would debit nothing. This distributes each squad's UNATTRIBUTED renown (total minus
+// what members already sum to) equally across the roster, so departures debit a real share. Idempotent; the
+// past can't be attributed accurately, so an equal split is the honest approximation and new battles credit
+// actual participants going forward. Run it ONCE after deploying the new binary.
+//
+//	go run ./cmd/reconcile-squads -contributions          # DRY RUN — show the per-squad distribution
+//	go run ./cmd/reconcile-squads -contributions -apply   # seed the ledger
 package main
 
 import (
@@ -33,6 +43,7 @@ import (
 func main() {
 	apply := flag.Bool("apply", false, "execute the plan (default is a dry run that writes nothing)")
 	grades := flag.Bool("grades", false, "backfill stored squad grades from lifetime renown instead of reconciling membership")
+	contributions := flag.Bool("contributions", false, "backfill the per-member renown ledger from each squad's accrued renown (one-time migration from the old flat-share withdraw model)")
 	flag.Parse()
 
 	cfg := config.LoadConfig()
@@ -71,6 +82,26 @@ func main() {
 		printSection("GRADE BACKFILL (stored grade -> derived; no history event)", gr.Changes)
 		if !gr.Applied && len(gr.Changes) > 0 {
 			logging.Info.Printf("[RECONCILE] dry run only — re-run with -grades -apply to execute")
+		}
+		return
+	}
+
+	// Contribution backfill is its own pre-deploy step (like -grades): it seeds the per-member renown ledger
+	// so departures debit a real share instead of 0 on data that predates the ledger. Run it ONCE, right
+	// after deploying the new binary. Idempotent.
+	if *contributions {
+		cr, err := squad.BackfillMemberContributions(ctx, *apply)
+		if err != nil {
+			logging.Error.Fatalf("[RECONCILE] contribution backfill failed: %v", err)
+		}
+		mode := "DRY RUN (no writes)"
+		if cr.Applied {
+			mode = "APPLIED"
+		}
+		logging.Info.Printf("[RECONCILE] contribution backfill %s — %d squads scanned, %d with an unattributed renown gap", mode, cr.Scanned, len(cr.Changes))
+		printSection("CONTRIBUTION BACKFILL (distribute unattributed renown equally across the roster)", cr.Changes)
+		if !cr.Applied && len(cr.Changes) > 0 {
+			logging.Info.Printf("[RECONCILE] dry run only — re-run with -contributions -apply to execute")
 		}
 		return
 	}

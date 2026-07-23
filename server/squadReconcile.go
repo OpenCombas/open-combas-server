@@ -286,3 +286,85 @@ func (r *SquadRepository) ReconcileSquads(ctx context.Context, apply bool) (*Rec
 
 	return report, nil
 }
+
+// ContributionBackfillReport summarises a BackfillMemberContributions run (or its dry-run plan).
+type ContributionBackfillReport struct {
+	Applied bool
+	Scanned int
+	Changes []string
+}
+
+// BackfillMemberContributions seeds the per-member renown ledger (SquadMemberRecord.RenownContribution) for
+// squads that accrued renown under the OLD flat-share model, before that field existed. For each squad it
+// distributes the UNATTRIBUTED renown -- the squad's Renown.Total minus what its members' ledgers already
+// sum to -- equally across the current roster, so a withdraw debits a real share instead of 0.
+//
+// Idempotent and composable: once the ledger sums to the total the gap is 0 and re-running is a no-op; and
+// because it reuses the same equal-split credit a battle uses (CreditMemberContributions), it fills only the
+// REMAINING gap on top of any real contributions already recorded. The past cannot be attributed accurately
+// (old battle reports never recorded who fought), so an equal split is the honest approximation -- it matches
+// the flat Renown/N the old debit assumed, while new battles credit actual participants going forward. Skips
+// squads already consistent, with no renown, or whose gap is smaller than the roster (negligible remainder
+// left unattributed, favouring the squad -- the same flooring the credit/debit use).
+func (r *SquadRepository) BackfillMemberContributions(ctx context.Context, apply bool) (ContributionBackfillReport, error) {
+	report := ContributionBackfillReport{Applied: apply}
+
+	var squads []Squad
+	cur, err := r.squads.Find(ctx, bson.M{})
+	if err != nil {
+		return report, err
+	}
+	if err := cur.All(ctx, &squads); err != nil {
+		return report, err
+	}
+
+	// One read of the whole stats collection (matches BackfillSquadGrades): this scans every squad, so a
+	// per-squad lookup would be N round-trips for nothing.
+	var stats []SquadStats
+	scur, err := r.stats.Find(ctx, bson.M{})
+	if err != nil {
+		return report, err
+	}
+	if err := scur.All(ctx, &stats); err != nil {
+		return report, err
+	}
+	renownByTeam := make(map[string]int32, len(stats))
+	for _, s := range stats {
+		renownByTeam[s.TeamID] = s.Renown.Total
+	}
+
+	for _, sq := range squads {
+		report.Scanned++
+		n := len(sq.Members)
+		if n == 0 {
+			continue
+		}
+		total := renownByTeam[sq.TeamID] // absent stats doc -> 0 -> no gap, skipped below
+		var attributed int32
+		userIDs := make([]string, 0, n)
+		for _, m := range sq.Members {
+			attributed += m.RenownContribution
+			userIDs = append(userIDs, m.UserID)
+		}
+		gap := total - attributed
+		if gap <= 0 {
+			continue // already consistent (or over-attributed), or no renown
+		}
+		share := gap / int32(n)
+		if share <= 0 {
+			continue // gap smaller than the roster; negligible remainder stays unattributed
+		}
+		report.Changes = append(report.Changes,
+			fmt.Sprintf("%s %q: renown %d, attributed %d -> distribute gap %d across %d members (+%d each)",
+				sq.TeamID, sq.Name, total, attributed, gap, n, share))
+
+		if !apply {
+			continue
+		}
+		// The backfill IS an equal-split credit of the historical gap, so reuse the battle-time path.
+		if err := r.CreditMemberContributions(ctx, sq.TeamID, userIDs, gap); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
+}
