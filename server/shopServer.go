@@ -62,15 +62,24 @@ type ShopResponse struct {
 	Blocks [shopBlockCount]ShopBlock
 }
 
-// buildMarkerShop fills every field with a distinct, recognisable value so a single in-game capture labels
-// the whole structure:
+// validPartCodes are 4-char part codes CONFIRMED to exist in the client's part database (reverse-engineered
+// from the "Hound Buy Check" sub_822AA968 / CH_ShopLimitedListScene; the client loads
+// auto:\game\hound\shop\<code>.mcd). The Code field is validated against the part DB -- an unknown code makes
+// the client DROP the whole entry ("no shop lineup"), which is why the all-marker first attempt rendered
+// empty. Entries using these codes render; the OTHER fields still carry markers so the capture labels them.
+// TODO: expand to the full catalogue from the .mcd files the game loads (see chromehounds_shop_re.md).
+var validPartCodes = []string{"H600", "H601", "H602"}
+
+// buildMarkerShop serves a mostly-marker catalogue whose FIRST entries use real part codes so they actually
+// render, while their other fields stay distinct markers to label the structure from one capture:
 //   - block Name -> "BLOCK0 ..."/"BLOCK1 ..." (which section is which, and whether both render);
 //   - block Vals[i] -> 1_000_000*(block+1)+i (find funds/count among the 7);
 //   - item Price -> 100_000*(block+1)+i (find the price cell and item order);
-//   - item Code -> "A000".."A079" / "B000".."B079" (find the part-code column + block identity + ordering);
+//   - item Code -> a real part code for the first len(validPartCodes) entries, else "A000".. (which the
+//     client drops) -- so the rendered rows prove the Code field IS the part-lookup key;
 //   - item IDs -> {i, 1000+i} (tell the two shorts apart).
 //
-// Count is set to the full item count; if the UI shows fewer, Count gates rendering.
+// Count is set to the full item count; if the UI shows only the valid-coded rows, Count does not gate.
 func buildMarkerShop(xuid [16]byte, order [8]byte) ShopResponse {
 	resp := ShopResponse{Header: CreateHeader(xuid, order)}
 	for b := 0; b < shopBlockCount; b++ {
@@ -88,7 +97,11 @@ func buildMarkerShop(xuid [16]byte, order [8]byte) ShopResponse {
 			it.Price = int32(100_000*(b+1) + i)
 			it.IDs[0] = int16(i)
 			it.IDs[1] = int16(1000 + i)
-			copy(it.Code[:], fmt.Sprintf("%c%03d", codeCh, i)) // "A000".."A079"
+			if i < len(validPartCodes) {
+				copy(it.Code[:], validPartCodes[i]) // real part -> this row renders
+			} else {
+				copy(it.Code[:], fmt.Sprintf("%c%03d", codeCh, i)) // unknown -> dropped by the client
+			}
 		}
 	}
 	return resp

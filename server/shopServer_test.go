@@ -35,13 +35,14 @@ func TestShopResponseWireLayout(t *testing.T) {
 	if !bytes.HasPrefix(body[1012:1012+20], []byte("BLOCK1")) {
 		t.Errorf("block1 name = %q, want BLOCK1...", body[1012:1012+20])
 	}
-	// Block 0, entry 0: Price 100000 (LE int32) at header(52)+0; Code "A000" at +8.
+	// Block 0, entry 0: Price 100000 (LE int32) at header(52)+0; Code = a real part code at +8 so the row
+	// renders (marker codes are dropped by the client's part-DB check).
 	e0 := body[52:]
 	if got := int32(binary.LittleEndian.Uint32(e0[0:4])); got != 100000 {
 		t.Errorf("block0 item0 price = %d, want 100000", got)
 	}
-	if string(e0[8:12]) != "A000" {
-		t.Errorf("block0 item0 code = %q, want A000", e0[8:12])
+	if string(e0[8:12]) != validPartCodes[0] {
+		t.Errorf("block0 item0 code = %q, want %q (a real part code)", e0[8:12], validPartCodes[0])
 	}
 	// Block 1, entry 5: Price 200005; Code "B005".
 	e := body[1012+52+5*12:]
