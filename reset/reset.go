@@ -233,6 +233,33 @@ func seedBattlefields(downscale int32) []battlefield {
 	return out
 }
 
+// SeedBattlefield is a public view of one reset battlefield, for out-of-band tooling (e.g. the season
+// predictor) that needs the canonical starting layout without depending on Mongo. Owner is the nation char
+// ('A'/'B'/'C') that holds it 100% at reset.
+type SeedBattlefield struct {
+	AreaID, MapID, Capacity, StrategicValue int32
+	Owner                                   byte
+}
+
+// SeededBattlefields returns the canonical starting battlefield layout at the given downscale, exactly as
+// resetBattlefields would write it (same seedBattlefields path -> single source of truth for the canonical
+// capacities/dots and default ownership).
+func SeededBattlefields(downscale int32) []SeedBattlefield {
+	raw := seedBattlefields(downscale)
+	out := make([]SeedBattlefield, len(raw))
+	for i, b := range raw {
+		owner := byte('A')
+		switch {
+		case b.OccB == b.Capacity:
+			owner = 'B'
+		case b.OccC == b.Capacity:
+			owner = 'C'
+		}
+		out[i] = SeedBattlefield{AreaID: b.AreaID, MapID: b.MapID, Capacity: b.Capacity, StrategicValue: b.StrategicValue, Owner: owner}
+	}
+	return out
+}
+
 // Reset runs the requested subsystem reset. only == "" or "all" resets the WHOLE world (a new season:
 // battlefields + events + captures). A specific subsystem ("battlefields"/"world", "events"/"news", or
 // "captures") resets ONLY that one, so a feature can be re-tested mid-season WITHOUT wiping unrelated
