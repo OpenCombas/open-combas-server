@@ -47,13 +47,21 @@ type ShopItem struct {
 	Code  [4]byte  // "C4" -- provisional: 4-char part/item code
 }
 
-// ShopBlock is one of the two 1012-byte sections (schema "C20, I7, S1, C2" header + 80 items).
+// ShopBlock is one of the two 1012-byte sections. On the wire it deserializes as "C20, I7, S1, C2" + 80x
+// "I1,S2,C4", but the shop's own parser (sub_82162118) reads it field-by-field, which pins these meanings:
+//   - +0  Status  MUST be 0. If block0[0] || block1[0] is non-zero the client rejects the ENTIRE reply with
+//     the "failure to parse" dialog (text 1320) -- this is the C20 field's first byte (a status byte, like
+//     every other combas response), NOT part of a name. Getting this wrong was the whole bug.
+//   - +50 Count is a BYTE (the C2 field's first byte) = how many of the 80 Items the client actually reads.
+//     (The int16 at +48 -- schema S1 -- is not read by the lineup parser.)
 type ShopBlock struct {
-	Name  [20]byte // "C20" -- provisional: block/category/shop name
-	Vals  [7]int32 // "I7"  -- provisional: block-scope figures (funds / counts / flags)
-	Count int16    // "S1"  -- provisional: number of valid entries in Items
-	Flag  [2]byte  // "C2"  -- provisional: 2-char code/flag
-	Items [shopBlockItems]ShopItem
+	Status byte     // +0  status; 0 = OK (non-zero => whole reply rejected)
+	Name   [19]byte // +1  19-byte string field (season/shop id; sub_82828640 copies it)
+	Vals   [7]int32 // +20 block values (I7): +20 funds?, +24..40 five "new parts" slots, +44 ...
+	S1     int16    // +48 (schema S1; not read by the lineup parser)
+	Count  byte     // +50 ENTRY COUNT: number of Items the client reads (0..80)
+	Flag   byte     // +51 (C2[1]; TBD)
+	Items  [shopBlockItems]ShopItem
 }
 
 // ShopResponse is the full reply: the standard 32-byte header + two blocks.
@@ -82,16 +90,18 @@ var validPartCodes = []string{"H600", "H601", "H602"}
 // Count is set to the full item count; if the UI shows only the valid-coded rows, Count does not gate.
 func buildMarkerShop(xuid [16]byte, order [8]byte) ShopResponse {
 	resp := ShopResponse{Header: CreateHeader(xuid, order)}
+	// Read exactly the valid-coded entries so every row that reaches the client is a real part.
+	count := byte(len(validPartCodes))
 	for b := 0; b < shopBlockCount; b++ {
 		blk := &resp.Blocks[b]
-		copy(blk.Name[:], fmt.Sprintf("BLOCK%d-NAME-C20xxxx", b)) // <=20 chars
+		blk.Status = 0 // REQUIRED: non-zero here makes the client reject the whole reply
+		copy(blk.Name[:], fmt.Sprintf("BLK%d-NAME-19bytes", b))
 		for i := 0; i < len(blk.Vals); i++ {
 			blk.Vals[i] = int32(1_000_000*(b+1) + i)
 		}
-		blk.Count = int16(shopBlockItems)
-		blk.Flag[0] = byte('0' + b)
-		blk.Flag[1] = 'F'
-		codeCh := byte('A' + b)
+		blk.S1 = int16(500 + b)
+		blk.Count = count // BYTE at +50 -- the client reads this many Items
+		blk.Flag = byte('0' + b)
 		for i := 0; i < shopBlockItems; i++ {
 			it := &blk.Items[i]
 			it.Price = int32(100_000*(b+1) + i)
@@ -100,7 +110,7 @@ func buildMarkerShop(xuid [16]byte, order [8]byte) ShopResponse {
 			if i < len(validPartCodes) {
 				copy(it.Code[:], validPartCodes[i]) // real part -> this row renders
 			} else {
-				copy(it.Code[:], fmt.Sprintf("%c%03d", codeCh, i)) // unknown -> dropped by the client
+				copy(it.Code[:], fmt.Sprintf("%c%03d", byte('A'+b), i)) // marker (beyond Count; not read)
 			}
 		}
 	}

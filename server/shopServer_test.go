@@ -28,12 +28,21 @@ func TestShopResponseWireLayout(t *testing.T) {
 	}
 
 	body := buf[constants.MinHelloMessageSize:]
-	// Block 0 name and block 1 name at their 1012-byte stride.
-	if !bytes.HasPrefix(body[0:20], []byte("BLOCK0")) {
-		t.Errorf("block0 name = %q, want BLOCK0...", body[0:20])
+	// The critical invariant: the first byte of BOTH blocks is the status byte and MUST be 0, or the client
+	// rejects the whole reply ("failure to parse"). This is the bug the layout fix addresses.
+	if body[0] != 0 || body[1012] != 0 {
+		t.Fatalf("block status bytes must be 0: block0[0]=%d block1[0]=%d", body[0], body[1012])
 	}
-	if !bytes.HasPrefix(body[1012:1012+20], []byte("BLOCK1")) {
-		t.Errorf("block1 name = %q, want BLOCK1...", body[1012:1012+20])
+	// Name string is at +1 (after the status byte), 19 bytes.
+	if !bytes.HasPrefix(body[1:20], []byte("BLK0")) {
+		t.Errorf("block0 name = %q, want BLK0...", body[1:20])
+	}
+	if !bytes.HasPrefix(body[1013:1013+19], []byte("BLK1")) {
+		t.Errorf("block1 name = %q, want BLK1...", body[1013:1013+19])
+	}
+	// Entry count is the BYTE at +50 (not the int16 at +48).
+	if body[50] != byte(len(validPartCodes)) {
+		t.Errorf("block0 entry-count byte at +50 = %d, want %d", body[50], len(validPartCodes))
 	}
 	// Block 0, entry 0: Price 100000 (LE int32) at header(52)+0; Code = a real part code at +8 so the row
 	// renders (marker codes are dropped by the client's part-DB check).
