@@ -26,6 +26,7 @@ func main() {
 	downscale := flag.Int("downscale", 1, "divide starting capture points (battlefield capacity) by this factor to scale the war to the playerbase size (>=1; e.g. 20 -> a 25000-point battlefield starts at 1250)")
 	only := flag.String("only", "", "reset ONLY one subsystem instead of the whole world: battlefields | events | captures (default: all). Lets a feature be re-tested mid-season without wiping unrelated state")
 	season := flag.Int("season", 0, "set the server-wide war season number (>=1); reflected in the squad-stats aggregation buckets and the Status/World Season IDs at the next server start. 0 = leave unchanged. Not destructive, so it works without -confirm.")
+	lockout := flag.Duration("lockout-window", 0, "lock ALL maps for deployment for this long from now -- the between-seasons window during which squad leaders can change allegiance (e.g. 48h). Maps auto-unlock when it elapses. Non-destructive (works without -confirm); a -confirm world/battlefields reset with no -lockout-window opens the new season live immediately.")
 	flag.Parse()
 
 	if *downscale < 1 {
@@ -41,8 +42,8 @@ func main() {
 	if scope == "" {
 		scope = "all"
 	}
-	if !*confirm && *season <= 0 {
-		logging.Warn.Printf("[RESET] nothing to do. The reset (%s) is DESTRUCTIVE on database %q -- re-run with -confirm; or set just the war season with -season N.", scope, cfg.Mongo.Database)
+	if !*confirm && *season <= 0 && *lockout <= 0 {
+		logging.Warn.Printf("[RESET] nothing to do. The reset (%s) is DESTRUCTIVE on database %q -- re-run with -confirm; or set just the war season with -season N, or open a lockout window with -lockout-window D.", scope, cfg.Mongo.Database)
 		return
 	}
 
@@ -68,6 +69,16 @@ func main() {
 		logging.Info.Printf("[RESET] war season set to %d (applies at the next server start)", *season)
 	}
 
+	// The between-seasons lockout is non-destructive (like -season): if given, lock ALL maps for deployment
+	// from now for the window. Applies at the next server start and auto-unlocks when it elapses.
+	if *lockout > 0 {
+		startAt := time.Now().Add(*lockout)
+		if err := server.SaveSeasonStart(ctx, store, startAt.Unix()); err != nil {
+			logging.Error.Fatalf("[RESET] set lockout window failed: %v", err)
+		}
+		logging.Info.Printf("[RESET] all maps LOCKED for deployment for %s (season starts %s) -- allegiance-change window; auto-unlocks after (applies at next server start)", *lockout, startAt.Format("2006-01-02 15:04 MST"))
+	}
+
 	if !*confirm {
 		return
 	}
@@ -77,4 +88,12 @@ func main() {
 		logging.Error.Fatalf("[RESET] reset failed: %v", err)
 	}
 	logging.Info.Printf("[RESET] reset (%s) complete", scope)
+
+	// A world/battlefields reset opens a new season. Unless the operator explicitly opened a lockout above,
+	// clear any stale one so the fresh season is live immediately.
+	if *lockout == 0 && (scope == "all" || scope == "battlefields" || scope == "world") {
+		if err := server.SaveSeasonStart(ctx, store, time.Now().Unix()); err != nil {
+			logging.Error.Fatalf("[RESET] clear lockout window failed: %v", err)
+		}
+	}
 }
