@@ -309,10 +309,12 @@ func resetBattlefields(ctx context.Context, store *persistence.Store, downscale 
 	if _, err := coll.InsertMany(ctx, anyDocs); err != nil {
 		return err
 	}
-	// Fresh battlefields start unlocked (no lock fields), so zero the per-nation battle counter that
-	// drives the capture-lock clock -- otherwise a stale count from the prior war leaves the unlock
-	// thresholds reading from an arbitrary baseline.
-	if _, err := store.Collection(nationsCollection).UpdateMany(ctx, bson.M{}, bson.M{"$set": bson.M{"battleCount": int32(0)}}); err != nil {
+	// Reset per-nation season state. Fresh battlefields put every nation back at 100% of its own capital, so
+	// no nation is dissolved: clear deadFlag + hqLostTo (a nation dissolved at the end of the previous season
+	// must start the new one ALIVE) and zero battleCount (the capture-lock clock -- a stale count would leave
+	// the unlock thresholds reading from an arbitrary baseline).
+	if _, err := store.Collection(nationsCollection).UpdateMany(ctx, bson.M{},
+		bson.M{"$set": bson.M{"battleCount": int32(0), "deadFlag": int32(0)}, "$unset": bson.M{"hqLostTo": ""}}); err != nil {
 		return err
 	}
 	// Clear the per-area fierce-battle tallies so the new war starts with no fierce flags.
