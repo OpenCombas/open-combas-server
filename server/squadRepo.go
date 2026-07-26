@@ -829,6 +829,75 @@ func (r *SquadRepository) findSquad(ctx context.Context, filter bson.M) (*Squad,
 	return &sq, nil
 }
 
+// NationPlayerCounts is the active-players-by-nation report. ONLINE = consoles currently connected (the
+// Xenia-WebServices `players` presence collection) resolved to their squad's nation; REGISTERED = every
+// squad member per nation. Keys are nation chars "A"/"B"/"C"; ONLINE also carries "none" for a connected
+// player not in any squad. Read-only aggregate -- safe to serve to a public dashboard.
+type NationPlayerCounts struct {
+	Online     map[string]int `json:"online"`
+	Registered map[string]int `json:"registered"`
+}
+
+// PlayersByNation computes both metrics in one call from the shared combas DB.
+func (r *SquadRepository) PlayersByNation(ctx context.Context) (NationPlayerCounts, error) {
+	// Pre-seed the three nations so the payload always has a stable A/B/C shape (0 when none online/registered).
+	out := NationPlayerCounts{
+		Online:     map[string]int{"A": 0, "B": 0, "C": 0},
+		Registered: map[string]int{"A": 0, "B": 0, "C": 0},
+	}
+
+	// ONLINE: join each connected player to its squad (members.xuid) and take that squad's faction.
+	onlineCur, err := r.players.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$lookup", Value: bson.M{"from": squadsCollection, "localField": "xuid", "foreignField": "members.xuid", "as": "sq"}}},
+		{{Key: "$group", Value: bson.M{
+			"_id": bson.M{"$ifNull": bson.A{bson.M{"$arrayElemAt": bson.A{"$sq.faction", 0}}, "none"}},
+			"n":   bson.M{"$sum": 1},
+		}}},
+	})
+	if err != nil {
+		return out, err
+	}
+	if err := decodeNationCounts(ctx, onlineCur, out.Online); err != nil {
+		return out, err
+	}
+
+	// REGISTERED: sum each squad's member count into its faction.
+	regCur, err := r.squads.Aggregate(ctx, mongo.Pipeline{
+		{{Key: "$group", Value: bson.M{
+			"_id": "$faction",
+			"n":   bson.M{"$sum": bson.M{"$size": bson.M{"$ifNull": bson.A{"$members", bson.A{}}}}},
+		}}},
+	})
+	if err != nil {
+		return out, err
+	}
+	if err := decodeNationCounts(ctx, regCur, out.Registered); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+// decodeNationCounts folds a {_id: <faction|null>, n: <count>} cursor into a nation->count map ("none" for a
+// null/empty faction).
+func decodeNationCounts(ctx context.Context, cur *mongo.Cursor, into map[string]int) error {
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var row struct {
+			ID any `bson:"_id"`
+			N  int `bson:"n"`
+		}
+		if err := cur.Decode(&row); err != nil {
+			return err
+		}
+		key := "none"
+		if s, ok := row.ID.(string); ok && s != "" {
+			key = s
+		}
+		into[key] += row.N
+	}
+	return cur.Err()
+}
+
 // Allegiance-change status bytes, exactly as the client's msgCode-201 parser sub_823BE000 reads them from
 // the first response body byte: '1' Complete, '2' "Demand Same As Current State", anything else "Unknown
 // Error". allegianceError is any non-1/2 value.

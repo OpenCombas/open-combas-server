@@ -27,6 +27,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/backfil
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/unidentified-weapon ./cmd/unidentified-weapon
 # unidentified weapon trigger util
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/maintenance ./cmd/maintenance
+# Standalone ChromeHounds read-only HTTP API (active players by nation, etc.). Run as its own service:
+# `docker compose run --rm -p 8099:8099 --entrypoint /app/chapi combas-server`
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/chapi ./cmd/chapi
 
 # ---- runtime stage ----
 FROM gcr.io/distroless/static-debian12:nonroot
@@ -41,6 +44,7 @@ COPY --from=build /out/reconcile-squads /app/reconcile-squads
 COPY --from=build /out/backfill-gamertags /app/backfill-gamertags
 COPY --from=build /out/unidentified-weapon /app/unidentified-weapon
 COPY --from=build /out/maintenance /app/maintenance
+COPY --from=build /out/chapi /app/chapi
 COPY --from=build /src/cmd/simulate/scenarios /app/
 # Baked default config; MONGO_URI / MONGO_DATABASE / LISTENING_ADDRESS env vars override at runtime.
 COPY config.toml /app/config.toml
