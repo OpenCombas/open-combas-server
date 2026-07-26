@@ -829,31 +829,42 @@ func (r *SquadRepository) findSquad(ctx context.Context, filter bson.M) (*Squad,
 	return &sq, nil
 }
 
-// NationPlayerCounts is the active-players-by-nation report. ONLINE = consoles currently connected (the
-// Xenia-WebServices `players` presence collection) resolved to their squad's nation; REGISTERED = every
-// squad member per nation. Keys are nation chars "A"/"B"/"C"; ONLINE also carries "none" for a connected
-// player not in any squad. Read-only aggregate -- safe to serve to a public dashboard.
+// NationPlayerCounts is the active-players-by-nation report. ONLINE = players CURRENTLY IN the game,
+// resolved to their squad's nation; REGISTERED = every squad member per nation. Keys are nation chars
+// "A"/"B"/"C"; ONLINE also carries "none" for an in-game player not in any squad. Read-only aggregate --
+// safe to serve to a public dashboard.
+//
+// "In game" is keyed on the Xenia `players.titleId` == the ChromeHounds title id: it is the reliable signal
+// (0/unset when the console is offline or on the dashboard). The stored `state` is NOT reliable -- Xenia
+// derives true liveness from its live WS registry and leaves stale state on the 1-day-TTL login record.
 type NationPlayerCounts struct {
 	Online     map[string]int `json:"online"`
 	Registered map[string]int `json:"registered"`
 }
 
-// PlayersByNation computes both metrics in one call from the shared combas DB.
-func (r *SquadRepository) PlayersByNation(ctx context.Context) (NationPlayerCounts, error) {
+// PlayersByNation computes both metrics in one call from the shared combas DB. onlineTitleID filters the
+// ONLINE count to players in that title (the ChromeHounds title id); "" counts all login records (not
+// recommended -- includes offline consoles still within the 1-day login TTL).
+func (r *SquadRepository) PlayersByNation(ctx context.Context, onlineTitleID string) (NationPlayerCounts, error) {
 	// Pre-seed the three nations so the payload always has a stable A/B/C shape (0 when none online/registered).
 	out := NationPlayerCounts{
 		Online:     map[string]int{"A": 0, "B": 0, "C": 0},
 		Registered: map[string]int{"A": 0, "B": 0, "C": 0},
 	}
 
-	// ONLINE: join each connected player to its squad (members.xuid) and take that squad's faction.
-	onlineCur, err := r.players.Aggregate(ctx, mongo.Pipeline{
-		{{Key: "$lookup", Value: bson.M{"from": squadsCollection, "localField": "xuid", "foreignField": "members.xuid", "as": "sq"}}},
-		{{Key: "$group", Value: bson.M{
+	// ONLINE: keep only players currently in the game (titleId), then join to their squad's faction.
+	onlinePipe := mongo.Pipeline{}
+	if onlineTitleID != "" {
+		onlinePipe = append(onlinePipe, bson.D{{Key: "$match", Value: bson.M{"titleId": onlineTitleID}}})
+	}
+	onlinePipe = append(onlinePipe,
+		bson.D{{Key: "$lookup", Value: bson.M{"from": squadsCollection, "localField": "xuid", "foreignField": "members.xuid", "as": "sq"}}},
+		bson.D{{Key: "$group", Value: bson.M{
 			"_id": bson.M{"$ifNull": bson.A{bson.M{"$arrayElemAt": bson.A{"$sq.faction", 0}}, "none"}},
 			"n":   bson.M{"$sum": 1},
 		}}},
-	})
+	)
+	onlineCur, err := r.players.Aggregate(ctx, onlinePipe)
 	if err != nil {
 		return out, err
 	}

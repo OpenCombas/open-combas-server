@@ -36,6 +36,9 @@ func main() {
 	}
 	listen := envOr("CH_API_LISTEN", ":8099")
 	cors := envOr("CH_API_CORS", "*")
+	// A player is "online" when its Xenia login record's titleId == the ChromeHounds title (in-game); 0/unset
+	// means offline/dashboard. This is the reliable presence signal (the stored `state` is not).
+	titleID := envOr("CH_TITLE_ID", "534507D4")
 
 	connectCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -56,15 +59,16 @@ func main() {
 		}
 		reqCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 		defer cancel()
-		counts, err := squad.PlayersByNation(reqCtx)
+		counts, err := squad.PlayersByNation(reqCtx, titleID)
 		if err != nil {
 			logging.Warn.Printf("[CHAPI] players-by-nation failed: %v", err)
 			http.Error(w, "query failed", http.StatusInternalServerError)
 			return
 		}
 		writeJSON(w, map[string]any{
-			"online":      counts.Online,
-			"registered":  counts.Registered,
+			"online":      counts.Online,     // players currently in the ChromeHounds title
+			"registered":  counts.Registered, // all squad members, by nation
+			"titleId":     titleID,
 			"generatedAt": time.Now().UTC().Format(time.RFC3339),
 		})
 	})

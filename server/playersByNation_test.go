@@ -36,18 +36,21 @@ func TestPlayersByNationFunctional(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed squad: %v", err)
 	}
-	// A connected player in that squad, and one with no squad.
+	const chTitle = "534507D4"
+	// In-game leader (in squad C), an in-game squad-less player, and an OFFLINE player (titleId 0) that must
+	// NOT be counted as online.
 	_, _ = repo.players.InsertMany(ctx, []any{
-		bson.M{"xuid": "PBN_X1", "gamertag": "lead", "state": 19},
-		bson.M{"xuid": "PBN_LONER", "gamertag": "loner", "state": 19},
+		bson.M{"xuid": "PBN_X1", "gamertag": "lead", "state": 19, "titleId": chTitle},
+		bson.M{"xuid": "PBN_LONER", "gamertag": "loner", "state": 19, "titleId": chTitle},
+		bson.M{"xuid": "PBN_OFFLINE", "gamertag": "afk", "state": 19, "titleId": "0"},
 	})
 	defer func() {
 		_, _ = repo.squads.DeleteOne(ctx, bson.M{"teamId": sq.TeamID})
 		_, _ = repo.profiles.DeleteMany(ctx, bson.M{"teamId": sq.TeamID})
-		_, _ = repo.players.DeleteMany(ctx, bson.M{"xuid": bson.M{"$in": bson.A{"PBN_X1", "PBN_LONER"}}})
+		_, _ = repo.players.DeleteMany(ctx, bson.M{"xuid": bson.M{"$in": bson.A{"PBN_X1", "PBN_LONER", "PBN_OFFLINE"}}})
 	}()
 
-	got, err := repo.PlayersByNation(ctx)
+	got, err := repo.PlayersByNation(ctx, chTitle)
 	if err != nil {
 		t.Fatalf("PlayersByNation: %v", err)
 	}
@@ -55,9 +58,10 @@ func TestPlayersByNationFunctional(t *testing.T) {
 		t.Errorf("registered C = %d, want >=1 (the seeded leader)", got.Registered["C"])
 	}
 	if got.Online["C"] < 1 {
-		t.Errorf("online C = %d, want >=1 (the connected leader)", got.Online["C"])
+		t.Errorf("online C = %d, want >=1 (the in-game leader)", got.Online["C"])
 	}
-	if got.Online["none"] < 1 {
-		t.Errorf("online none = %d, want >=1 (the squad-less connected player)", got.Online["none"])
+	// The squad-less ONLINE count must be exactly the one in-game loner -- the titleId-0 player is excluded.
+	if got.Online["none"] != 1 {
+		t.Errorf("online none = %d, want exactly 1 (in-game loner only; offline titleId-0 excluded)", got.Online["none"])
 	}
 }
