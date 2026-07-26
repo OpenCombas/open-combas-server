@@ -44,6 +44,27 @@ services:
       opencombas:
         ipv4_address: 172.20.0.150
 
+  # Standalone ChromeHounds read-only HTTP API (active players by nation, etc.). Same image as combas-server,
+  # just a different entrypoint; reads the shared Mongo. GET http://<host>:8099/api/players-by-nation
+  chapi:
+    build:
+      context: .
+    restart: unless-stopped
+    entrypoint: ["/app/chapi"]
+    environment:
+      MONGO_URI: "mongodb://mongo:27017/"
+      MONGO_DATABASE: "test"
+      CH_API_LISTEN: ":8099"
+    volumes:
+      - ./config.toml:/app/config.toml
+    ports:
+      - "8099:8099"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - opencombas
+
   webservices:
     # Xenia-WebServices is vendored as a git submodule under external/. It ships a lowercase `dockerfile`;
     # name it explicitly so it builds on case-sensitive filesystems (Docker otherwise looks for `Dockerfile`).

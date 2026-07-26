@@ -50,6 +50,25 @@ services:
     networks:
       - opencombas
 
+  chapi:
+    build:
+      context: .
+    restart: unless-stopped
+    entrypoint: ["/app/chapi"]
+    environment:
+      MONGO_URI: "mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/"
+      MONGO_DATABASE: "test"
+      CH_API_LISTEN: ":8099"
+    volumes:
+      - ./config.toml:/app/config.toml
+    ports:
+      - "8099:8099"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - opencombas
+
   webservices:
     # Xenia-WebServices is vendored as a git submodule under external/. It ships a lowercase `dockerfile`;
     # name it explicitly so it builds on case-sensitive filesystems (Docker otherwise looks for `Dockerfile`).
