@@ -7,6 +7,12 @@
 //	go run ./cmd/maintenance -start 2026-08-01T02:00:00Z -end 2026-08-01T04:00:00Z
 //	go run ./cmd/maintenance -clear                           # remove it (announce nothing)
 //
+// It also ends a WAR SEASON as a phased, automatic rollover (the server's season controller drives it):
+//
+//	go run ./cmd/maintenance -season-end -result 48h          # end now: lock maps + event, 48h result period, 6h maintenance
+//	go run ./cmd/maintenance -season-end -lead 24h -result 48h -window 6h -downscale 20
+//	go run ./cmd/maintenance -cancel-season-end               # cancel a scheduled season-end (before the window opens)
+//
 // IMPORTANT (see server/maintenanceWindow.go for the full RE): there is no "nothing scheduled" wire state --
 // all-flags-zero is healthy AND shows the dated announce, so the title tells players about a window once per
 // session by design. A window in the PAST must NOT be served: the client's availability predicate treats
@@ -30,6 +36,14 @@ func main() {
 	forDur := flag.Duration("for", 2*time.Hour, "window DURATION when using -in (default 2h)")
 	startStr := flag.String("start", "", "explicit window start (RFC3339, e.g. 2026-08-01T02:00:00Z); pair with -end")
 	endStr := flag.String("end", "", "explicit window end (RFC3339); pair with -start")
+
+	seasonEnd := flag.Bool("season-end", false, "END THE WAR SEASON: schedule the phased rollover -- lock maps + fire the end-of-war event at t0, then a maintenance window that increments the season and resets the battlefield. Uses -lead/-result/-window/-downscale.")
+	lead := flag.Duration("lead", 0, "-season-end: delay from now until the season actually ends (t0). 0 = end immediately.")
+	result := flag.Duration("result", 0, "-season-end: how long the ended season stays set with maps locked before maintenance begins (t0->t1). REQUIRED with -season-end.")
+	window := flag.Duration("window", 6*time.Hour, "-season-end: maintenance window length during which the season increments and the battlefield resets (t1->t2; default 6h)")
+	downscale := flag.Int("downscale", 1, "-season-end: battlefield-reset downscale for the NEW season (>=1)")
+	cancelSeasonEnd := flag.Bool("cancel-season-end", false, "cancel a scheduled season-end (before the window opens): clears the schedule, unlocks maps, clears the maintenance window")
+	force := flag.Bool("force", false, "-season-end: replace an already-pending season-end")
 	flag.Parse()
 
 	cfg := config.LoadConfig()
@@ -54,6 +68,12 @@ func main() {
 	now := time.Now().UTC()
 
 	switch {
+	case *cancelSeasonEnd:
+		cancelSeasonEndFlow(ctx, store, repo)
+
+	case *seasonEnd:
+		scheduleSeasonEnd(ctx, store, repo, now, *lead, *result, *window, *downscale, *force)
+
 	case *clear:
 		if err := repo.ClearMaintenanceWindow(ctx); err != nil {
 			logging.Error.Fatalf("[MAINT] clear failed: %v", err)
@@ -125,4 +145,112 @@ func report(ctx context.Context, repo *server.WorldRepository, now time.Time) {
 	st := server.ClassifyMaintenanceWindow(now, start, end)
 	logging.Info.Printf("[MAINT] served now:    %s .. %s -> %s",
 		start.Format(time.RFC3339), end.Format(time.RFC3339), st)
+}
+
+// scheduleSeasonEnd stores the phased end-of-season plan and fires phase 1 (lock + event + window
+// announce) immediately when -lead is 0. The server's season controller advances it from there: phase 1
+// at t0, then the destructive rollover (season++ + battlefield reset) at t1, with maps auto-unlocking at
+// t2. The outcome shown here is a PREVIEW from the current state; the applier recomputes it at t0.
+func scheduleSeasonEnd(ctx context.Context, store *persistence.Store, repo *server.WorldRepository, now time.Time, lead, result, window time.Duration, downscale int, force bool) {
+	switch {
+	case result <= 0:
+		logging.Error.Fatalf("[SEASON-END] -result must be positive (the period the ended season stays locked before maintenance)")
+	case window <= 0:
+		logging.Error.Fatalf("[SEASON-END] -window must be positive")
+	case lead < 0:
+		logging.Error.Fatalf("[SEASON-END] -lead must not be negative")
+	case downscale < 1:
+		logging.Error.Fatalf("[SEASON-END] -downscale must be >= 1")
+	}
+
+	existing, err := server.LoadSeasonEnd(ctx, store)
+	if err != nil {
+		logging.Error.Fatalf("[SEASON-END] read existing schedule failed: %v", err)
+	}
+	if existing.Pending() && !force {
+		logging.Error.Fatalf("[SEASON-END] a season-end is already scheduled (t0=%s); pass -force to replace it, or -cancel-season-end first",
+			time.Unix(existing.EndsAt, 0).UTC().Format(time.RFC3339))
+	}
+
+	cur, err := server.LoadSeasonNumber(ctx, store)
+	if err != nil {
+		logging.Error.Fatalf("[SEASON-END] read season number failed: %v", err)
+	}
+	t0 := now.Add(lead)
+	t1 := t0.Add(result)
+	t2 := t1.Add(window)
+	sched := &server.SeasonEndSchedule{
+		CreatedAt: now.Unix(), EndsAt: t0.Unix(), WindowStart: t1.Unix(), WindowEnd: t2.Unix(),
+		FromSeason: cur, NextSeason: cur + 1, Downscale: int32(downscale),
+	}
+
+	if nations, err := repo.Nations(ctx); err == nil {
+		kind, victor := server.DetermineOutcome(nations)
+		logging.Info.Printf("[SEASON-END] preview (current standings): %s%s", outcomeLabel(kind), victorLabel(victor))
+	}
+	if err := server.SaveSeasonEnd(ctx, store, sched); err != nil {
+		logging.Error.Fatalf("[SEASON-END] save schedule failed: %v", err)
+	}
+	// Fire phase 1 now if t0 has arrived (lead 0); a no-op while t0 is in the future (the server's
+	// controller reaches it). Phase 2 (reset) is never due here -- result>0 keeps t1 in the future.
+	if err := server.ApplyDueSeasonEnd(ctx, store, repo, now); err != nil {
+		logging.Error.Fatalf("[SEASON-END] apply failed: %v", err)
+	}
+
+	logging.Info.Printf("[SEASON-END] scheduled: season %d -> %d (downscale %d)", cur, cur+1, downscale)
+	logging.Info.Printf("[SEASON-END]   t0 season ends  : %s (in %s)", t0.UTC().Format(time.RFC3339), lead)
+	logging.Info.Printf("[SEASON-END]   t1 maint. opens : %s (result period %s)", t1.UTC().Format(time.RFC3339), result)
+	logging.Info.Printf("[SEASON-END]   t2 new season   : %s (maintenance %s) -> maps unlock, server available", t2.UTC().Format(time.RFC3339), window)
+}
+
+// cancelSeasonEndFlow removes a scheduled season-end and reverses its online-visible effects (unlock maps,
+// clear the maintenance window). A rollover that has already incremented the season is not un-done -- only
+// the record, lock, and window are cleared (it warns in that case).
+func cancelSeasonEndFlow(ctx context.Context, store *persistence.Store, repo *server.WorldRepository) {
+	existing, err := server.LoadSeasonEnd(ctx, store)
+	if err != nil {
+		logging.Error.Fatalf("[SEASON-END] read schedule failed: %v", err)
+	}
+	if existing == nil {
+		logging.Info.Printf("[SEASON-END] nothing scheduled to cancel")
+		return
+	}
+	if existing.AppliedAt != 0 {
+		logging.Warn.Printf("[SEASON-END] the rollover already applied (season incremented at %s); cancel only clears the record, unlocks maps, and clears the window",
+			time.Unix(existing.AppliedAt, 0).UTC().Format(time.RFC3339))
+	}
+	if err := server.ClearSeasonEnd(ctx, store); err != nil {
+		logging.Error.Fatalf("[SEASON-END] clear schedule failed: %v", err)
+	}
+	if err := server.SaveSeasonStart(ctx, store, 0); err != nil {
+		logging.Error.Fatalf("[SEASON-END] unlock maps failed: %v", err)
+	}
+	if err := repo.ClearMaintenanceWindow(ctx); err != nil {
+		logging.Error.Fatalf("[SEASON-END] clear maintenance window failed: %v", err)
+	}
+	logging.Info.Printf("[SEASON-END] cancelled: schedule cleared, maps unlocked, maintenance window cleared")
+}
+
+func outcomeLabel(kind string) string {
+	switch kind {
+	case "victory":
+		return "single-nation VICTORY"
+	case "truce2":
+		return "2-way truce"
+	case "truce3":
+		return "3-way truce"
+	}
+	return kind
+}
+
+func victorLabel(victor byte) string {
+	switch victor {
+	case 'A':
+		return " (Tarakia)"
+	case 'B':
+		return " (Morskoj)"
+	case 'C':
+		return " (Sal Kar)"
+	}
+	return ""
 }

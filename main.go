@@ -97,6 +97,17 @@ func main() {
 		}
 	}
 
+	// Start the season controller: keeps the season/lock globals live (so a maintenance-tool change
+	// applies without a restart) and drives a scheduled end-of-season rollover (cmd/maintenance
+	// -season-end) automatically. No-op without Mongo; returns on ctx cancellation.
+	if store != nil && worldRepo != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server.RunSeasonController(ctx, store, worldRepo, 30*time.Second)
+		}()
+	}
+
 	// Initialize Prometheus Metrics registry
 	reg := prometheus.NewRegistry()
 	if cfg.Prometheus.EnableGoProfiling && cfg.Prometheus.Enabled {
