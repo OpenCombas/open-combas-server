@@ -254,11 +254,24 @@ func RunSeasonController(ctx context.Context, store *persistence.Store, repo *Wo
 	if store == nil {
 		return
 	}
+	logging.Info.Printf("[SEASON-END] controller active (season/lock refresh every %s)", interval)
+	prevLocked, prevSeason := SeasonLocked(), SeasonNumber()
 	pass := func() {
 		opCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 		defer cancel()
 		if err := RefreshSeasonState(opCtx, store); err != nil {
 			logging.Warn.Printf("[SEASON-END] season-state refresh failed: %v", err)
+		}
+		// Announce any live change so the lock/season transition is observable in the server logs (the
+		// per-request path stays silent). This is how an operator confirms a -season-end took hold.
+		if locked, season := SeasonLocked(), SeasonNumber(); locked != prevLocked || season != prevSeason {
+			if locked {
+				logging.Info.Printf("[SEASON-END] state: maps LOCKED, season=%d (until %s)",
+					season, time.Unix(SeasonStartsAt(), 0).UTC().Format(time.RFC3339))
+			} else {
+				logging.Info.Printf("[SEASON-END] state: maps OPEN, season=%d", season)
+			}
+			prevLocked, prevSeason = locked, season
 		}
 		if err := ApplyDueSeasonEnd(opCtx, store, repo, time.Now()); err != nil {
 			logging.Warn.Printf("[SEASON-END] schedule advance failed: %v", err)
