@@ -67,6 +67,11 @@ func newsRowIsWar(row int32) bool {
 	return row >= 1 && row <= 40
 }
 
+// isSeasonOutcomeRow reports whether a template row is a season-end war-outcome story: rows 10-15
+// "<Nation> Conquers Neroimus" (single-nation victory) and 16-28 "Neroimus War, Peace Accord" (truce).
+// These are routed to the current-news feed rather than history so a season end fires a notification.
+func isSeasonOutcomeRow(row int32) bool { return row >= 10 && row <= 28 }
+
 // filterNewsByCategory keeps only the events belonging to the requested domain. War news is global;
 // political news is scoped to the requesting nation. The "War Breaks Out" briefing is excluded from BOTH
 // domain feeds: it exists only as the empty-feed fallback (buildNews re-adds it when a category is empty),
@@ -78,12 +83,19 @@ func filterNewsByCategory(evs []EventRecord, nation byte, category int) []EventR
 			continue // the briefing is the shared fallback, not a war or political story
 		}
 		war := newsRowIsWar(ev.TemplateID)
+		// The season-end war-outcome stories (rows 10-28: "<Nation> Conquers Neroimus" / "Peace Accord")
+		// go to category 1 -- the client's "MILITARY NEWS" / current-news feed that fires the entry
+		// notification -- NOT category 2 ("HISTORY NEWS", the archive). Proven from a cat-1/cat-2 news
+		// packet capture (2026-09-18): a season-end event otherwise lands only in the category-2 history
+		// reply (the category-1 reply carried just the briefing), so no notification ever surfaced. Kept
+		// OUT of category 2 so the login flash (which appends both feeds) doesn't double-render it.
+		seasonOutcome := isSeasonOutcomeRow(ev.TemplateID)
 		switch {
-		case category == newsCategoryWar && war:
+		case category == newsCategoryWar && war && !seasonOutcome:
 			out = append(out, ev)
-		case category == newsCategoryPolitical && !war:
+		case category == newsCategoryPolitical && (!war || seasonOutcome):
 			// TODO: political news is nation-scoped -- filter by the event's nation once political events
-			// (donations/elections) carry one. None are generated yet, so this branch is currently empty.
+			// (donations/elections) carry one. Season-outcome events are global (nation-agnostic).
 			_ = nation
 			out = append(out, ev)
 		}
