@@ -51,6 +51,43 @@ Port = 1215
 Label = "WORLD_OLD"
 Port = 1255
 
+# Shop servers serve the in-game buy list. The four ports below are the ones
+# the game polls; each answers with the same catalog, filtered by the faction
+# byte in the request header.
+[[ShopServers]]
+Label = "SHOP_SERVER_NO_UPDATE"
+Port = 1208
+
+[[ShopServers]]
+Label = "SHOP_SERVER_UPDATE"
+Port = 1257
+
+[[ShopServers]]
+Label = "SHOP_SERVER_RETAIL"
+Port = 1388
+
+[[ShopServers]]
+Label = "SHOP_SERVER_RETAIL_TITLE_UPDATE"
+Port = 1397
+
+```
+
+## Shop Server
+
+The shop endpoints answer the client's buy-list request with the parts catalog:
+per faction, the complete-hound preset parts first, then the rest of the
+faction's catalog, up to the 160-row limit the packet format allows. The reply
+is byte-for-byte compatible with the TypeScript reference implementation
+(`OpenCombas/open-combas-server-js`); `go test ./shop/` pins that parity against
+golden packets generated from the reference sources.
+
+The catalog lives in `shop/catalog.go`, generated from the reference data:
+
+```bash
+# Regenerate catalog.go and the golden packets from a checkout of the
+# TypeScript reference server (needs node + esbuild).
+scripts/regen-catalog.sh ../open-combas-server-js
+go test ./shop/ -run TestBuildResponseMatchesGolden -v
 ```
 
 ## Performance Testing

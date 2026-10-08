@@ -43,6 +43,7 @@ type ServerType string
 const (
 	Echoing ServerType = "Echoing"
 	Status  ServerType = "Status"
+	Shop    ServerType = "Shop"
 )
 
 var configFilename = "config.toml"
@@ -110,6 +111,30 @@ func generateDefaultConfig() Config {
 				Port:    1207,
 				Enabled: true,
 				Type:    Status,
+			},
+			{
+				Label:   "SHOP_SERVER_NO_UPDATE",
+				Port:    1208,
+				Enabled: true,
+				Type:    Shop,
+			},
+			{
+				Label:   "SHOP_SERVER_UPDATE",
+				Port:    1257,
+				Enabled: true,
+				Type:    Shop,
+			},
+			{
+				Label:   "SHOP_SERVER_RETAIL",
+				Port:    1388,
+				Enabled: true,
+				Type:    Shop,
+			},
+			{
+				Label:   "SHOP_SERVER_RETAIL_TITLE_UPDATE",
+				Port:    1397,
+				Enabled: true,
+				Type:    Shop,
 			},
 		},
 		Logging: LoggingConfig{
